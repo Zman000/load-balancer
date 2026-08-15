@@ -8,7 +8,7 @@ import (
 func handleClient(conn net.Conn) {
 	defer conn.Close()
 
-	buffer := make([]byte, 1024)
+	buffer := make([]byte, 1026)
 	n, err := conn.Read(buffer)
 	// fmt.Println(string(buffer[:n]))
 	if err != nil {

@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net"
+	"os"
 )
 
 func main() {
@@ -12,12 +14,18 @@ func main() {
 	}
 	defer conn.Close()
 
-	str := "Hello! Sending msg from client"
-
-	_, err = conn.Write([]byte(str))
+	file, err := os.Open("data.txt")
 	if err != nil {
 		panic(err)
 	}
+	defer file.Close()
+
+	_, err = io.Copy(conn, file)
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println("File sent successfully")
 
 	buffer := make([]byte, 4096)
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net"
 )
 
@@ -17,31 +18,9 @@ func handleClient(conn net.Conn) {
 	}
 	defer backend.Close()
 
-	buffer := make([]byte, 4096)
-
-	n, err := conn.Read(buffer)
-	if err != nil {
-		fmt.Println("Error on read")
-		return
-	}
-
-	_, err = backend.Write(buffer[:n])
-	if err != nil {
-		fmt.Println("Error on writing to backend")
-		return
-	}
-
-	n, err = backend.Read(buffer)
-	if err != nil {
-		fmt.Println("Error on reading from backend")
-		return
-	}
-
-	_, err = conn.Write(buffer[:n])
-	if err != nil {
-		fmt.Println("Error on writing to client connection")
-		return
-	}
+	//use io functions to handle concurrent reading/writing
+	go io.Copy(conn, backend)
+	io.Copy(backend, conn)
 }
 
 func main() {
