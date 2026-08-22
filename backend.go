@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net"
+	"os"
 )
 
 func handleClient(conn net.Conn) {
@@ -28,7 +29,9 @@ func handleClient(conn net.Conn) {
 }
 
 func main() {
-	listener, err := net.Listen("tcp", "localhost:9000")
+	port := os.Args[1]
+
+	listener, err := net.Listen("tcp", ":"+port)
 	if err != nil {
 		fmt.Println("backend Error on listen")
 		panic(err)
