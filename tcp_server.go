@@ -13,19 +13,24 @@ import (
 const configFile = "backends.conf"
 
 type Backend struct {
-	address string
+	address           string
+	activeConnections int
 }
 
 type BackendPool struct {
 	mu       sync.Mutex
 	backends []Backend
-	current  int
+}
+
+type ClientHandler struct {
+	mu sync.Mutex
 }
 
 func connectClientToBackend(conn net.Conn, pool *BackendPool) {
 	defer conn.Close()
 
-	backendInfo := pool.Next()
+	backendInfo := pool.AcquireBackend()
+	defer pool.ReleaseBackend(backendInfo)
 
 	fmt.Println("Forwarding to:", backendInfo.address)
 
@@ -78,18 +83,17 @@ func loadBackends(filename string) ([]Backend, error) {
 	scanner := bufio.NewScanner(file)
 
 	for scanner.Scan() {
-		err := scanner.Err()
-		if err != nil {
-			return nil, err
-		}
-
 		addr := strings.TrimSpace(scanner.Text())
 		if addr == "" {
 			continue
 		}
 		backends = append(backends, Backend{
-			address: addr,
+			address:           addr,
+			activeConnections: 0,
 		})
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
 	}
 
 	if len(backends) == 0 {
@@ -99,23 +103,38 @@ func loadBackends(filename string) ([]Backend, error) {
 	return backends, nil
 }
 
-func (p *BackendPool) Next() Backend {
+func (p *BackendPool) AcquireBackend() *Backend {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	backend := p.backends[p.current]
-	p.current = (p.current + 1) % len(p.backends)
+	// minConnection := p.backends[0].activeConnections
+	backend := &p.backends[0]
+	for i := 1; i < len(p.backends); i++ {
+		if backend.activeConnections > p.backends[i].activeConnections {
+			backend = &p.backends[i]
+		}
+	}
 
+	backend.activeConnections += 1
 	return backend
+}
+
+func (p *BackendPool) ReleaseBackend(backend *Backend) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	backend.activeConnections--
 }
 
 func main() {
 
 	backends, err := loadBackends(configFile)
+	if err != nil {
+		fmt.Println("No backend configured")
+		panic(err)
+	}
 
 	pool := BackendPool{
 		backends: backends,
-		current:  0,
 	}
 
 	//load balancer's listen
@@ -133,9 +152,9 @@ func main() {
 		conn, err := lb_listener.Accept()
 		if err != nil {
 			fmt.Println("Error on accept")
-			panic(err)
+			continue
 		}
-		fmt.Println("Client connected ", conn.LocalAddr().String())
+		fmt.Println("Client connected ", conn.RemoteAddr())
 
 		go connectClientToBackend(conn, &pool)
 	}
