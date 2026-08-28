@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"os"
 )
@@ -9,18 +10,13 @@ import (
 func handleClient(conn net.Conn) {
 	defer conn.Close()
 
-	buffer := make([]byte, 1026)
-	n, err := conn.Read(buffer)
-	// fmt.Println(string(buffer[:n]))
+	n, err := io.Copy(io.Discard, conn)
 	if err != nil {
-		fmt.Println("Error on read")
-		panic(err)
+		fmt.Println("Error on reading from client")
+		return
 	}
-	message := buffer[:n]
 
-	fmt.Println("Received:", string(message))
-
-	confirmation := ([]byte("Recieved"))
+	confirmation := []byte(fmt.Sprintf("Recieved %d bytes", n))
 	_, err = conn.Write(confirmation)
 	if err != nil {
 		fmt.Println("Error on write:", err)

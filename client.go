@@ -27,6 +27,13 @@ func main() {
 
 	fmt.Println("File sent successfully")
 
+	tcpConn := conn.(*net.TCPConn)
+
+	err = tcpConn.CloseWrite()
+	if err != nil {
+		panic(err)
+	}
+
 	buffer := make([]byte, 4096)
 
 	n, err := conn.Read(buffer)

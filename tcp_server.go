@@ -22,7 +22,7 @@ type BackendPool struct {
 	current  int
 }
 
-func handleClient2(conn net.Conn, pool *BackendPool) {
+func connectClientToBackend(conn net.Conn, pool *BackendPool) {
 	defer conn.Close()
 
 	backendInfo := pool.Next()
@@ -39,8 +39,30 @@ func handleClient2(conn net.Conn, pool *BackendPool) {
 	defer backend.Close()
 
 	//use io functions to handle concurrent reading/writing
-	go io.Copy(conn, backend)
-	io.Copy(backend, conn)
+	res := make(chan error, 2)
+	go func() {
+		_, err := io.Copy(conn, backend)
+		if tcp, ok := conn.(*net.TCPConn); ok {
+			if closeErr := tcp.CloseWrite(); err == nil {
+				err = closeErr
+			}
+		}
+		res <- err
+	}()
+
+	go func() {
+		_, err := io.Copy(backend, conn)
+		if tcp, ok := backend.(*net.TCPConn); ok {
+			if closeErr := tcp.CloseWrite(); err == nil {
+				err = closeErr
+			}
+		}
+		res <- err
+	}()
+
+	<-res
+	<-res
+
 }
 
 func loadBackends(filename string) ([]Backend, error) {
@@ -56,6 +78,11 @@ func loadBackends(filename string) ([]Backend, error) {
 	scanner := bufio.NewScanner(file)
 
 	for scanner.Scan() {
+		err := scanner.Err()
+		if err != nil {
+			return nil, err
+		}
+
 		addr := strings.TrimSpace(scanner.Text())
 		if addr == "" {
 			continue
@@ -63,6 +90,10 @@ func loadBackends(filename string) ([]Backend, error) {
 		backends = append(backends, Backend{
 			address: addr,
 		})
+	}
+
+	if len(backends) == 0 {
+		panic("no active backend found")
 	}
 
 	return backends, nil
@@ -106,7 +137,7 @@ func main() {
 		}
 		fmt.Println("Client connected ", conn.LocalAddr().String())
 
-		go handleClient2(conn, &pool)
+		go connectClientToBackend(conn, &pool)
 	}
 
 }
