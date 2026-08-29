@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 const configFile = "backends.conf"
@@ -15,6 +16,7 @@ const configFile = "backends.conf"
 type Backend struct {
 	address           string
 	activeConnections int
+	healthy           bool
 }
 
 type BackendPool struct {
@@ -26,21 +28,39 @@ type ClientHandler struct {
 	mu sync.Mutex
 }
 
+func connectBackend(pool *BackendPool) (*Backend, net.Conn) {
+	for {
+		backendInfo := pool.AcquireBackend()
+
+		if backendInfo == nil {
+			return nil, nil
+		}
+
+		conn, err := net.DialTimeout("tcp", backendInfo.address, 1*time.Second)
+		if err == nil {
+			return backendInfo, conn
+		}
+
+		fmt.Printf("Backend %s is unreachable : %v\n", backendInfo.address, err)
+
+		pool.ReleaseBackend(backendInfo)
+		pool.SetHealth(backendInfo, false)
+	}
+}
+
 func connectClientToBackend(conn net.Conn, pool *BackendPool) {
 	defer conn.Close()
 
-	backendInfo := pool.AcquireBackend()
-	defer pool.ReleaseBackend(backendInfo)
+	// fmt.Println("Forwarding to:", backendInfo.address)
 
-	fmt.Println("Forwarding to:", backendInfo.address)
+	backendInfo, backend := connectBackend(pool)
 
-	//backend server, just a connection b/w load balancer and backend
-	//errors with a single client should not break whole server
-	backend, err := net.Dial("tcp", backendInfo.address)
-	if err != nil {
-		fmt.Println("Error on connecting to backend")
+	if backendInfo == nil {
+		fmt.Println("No healthy backend available")
 		return
 	}
+
+	defer pool.ReleaseBackend(backendInfo)
 	defer backend.Close()
 
 	//use io functions to handle concurrent reading/writing
@@ -90,6 +110,7 @@ func loadBackends(filename string) ([]Backend, error) {
 		backends = append(backends, Backend{
 			address:           addr,
 			activeConnections: 0,
+			healthy:           true,
 		})
 	}
 	if err := scanner.Err(); err != nil {
@@ -103,16 +124,43 @@ func loadBackends(filename string) ([]Backend, error) {
 	return backends, nil
 }
 
+func activeHealthCheck(p *BackendPool) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		for i := range p.backends {
+			backend := &p.backends[i]
+			conn, err := net.DialTimeout("tcp", backend.address, 1*time.Second)
+			healthy := err == nil
+
+			if conn != nil {
+				conn.Close()
+			}
+
+			p.SetHealth(backend, healthy)
+		}
+		<-ticker.C
+	}
+}
+
 func (p *BackendPool) AcquireBackend() *Backend {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// minConnection := p.backends[0].activeConnections
-	backend := &p.backends[0]
-	for i := 1; i < len(p.backends); i++ {
-		if backend.activeConnections > p.backends[i].activeConnections {
+	var backend *Backend
+
+	for i := range p.backends {
+		if !p.backends[i].healthy {
+			continue
+		}
+
+		if backend == nil || backend.activeConnections > p.backends[i].activeConnections {
 			backend = &p.backends[i]
 		}
+	}
+
+	if backend == nil {
+		return nil
 	}
 
 	backend.activeConnections += 1
@@ -123,6 +171,32 @@ func (p *BackendPool) ReleaseBackend(backend *Backend) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	backend.activeConnections--
+}
+
+func (p *BackendPool) SetHealth(backend *Backend, health bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	backend.healthy = health
+}
+
+func (p *BackendPool) PrintStatus() {
+	for {
+		time.Sleep(1 * time.Second)
+
+		p.mu.Lock()
+
+		fmt.Println("\n--- Backend Status ---")
+		for _, backend := range p.backends {
+			if backend.healthy {
+				fmt.Printf("%s -> %d active connections\n", backend.address, backend.activeConnections)
+			} else {
+				fmt.Printf("%s -> Unhealthy\n", backend.address)
+			}
+		}
+
+		p.mu.Unlock()
+	}
 }
 
 func main() {
@@ -136,6 +210,10 @@ func main() {
 	pool := BackendPool{
 		backends: backends,
 	}
+
+	go activeHealthCheck(&pool)
+	//function to test client connnections using loadTest file
+	go pool.PrintStatus()
 
 	//load balancer's listen
 	lb_listener, err := net.Listen("tcp", "localhost:8080")
@@ -154,7 +232,7 @@ func main() {
 			fmt.Println("Error on accept")
 			continue
 		}
-		fmt.Println("Client connected ", conn.RemoteAddr())
+		// fmt.Println("Client connected ", conn.RemoteAddr())
 
 		go connectClientToBackend(conn, &pool)
 	}
