@@ -1,0 +1,19 @@
+server:
+    listen_address: "localhost:8080"
+
+load_balancer:
+    algorithm: "least_connections"
+    connection_timeout: "1s"
+
+health_check:
+    enabled: true
+    timeout: "1s"
+    interval: "5s"
+
+print_status:
+    enabled: true
+
+backends:
+    - "localhost:9000"
+    - "localhost:9001"
+    - "localhost:9002"

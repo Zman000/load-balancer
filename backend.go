@@ -22,7 +22,7 @@ func handleClient(conn net.Conn) {
 		fmt.Println("Error on write:", err)
 		return
 	}
-	fmt.Println(confirmation)
+	// fmt.Println(confirmation)
 }
 
 func main() {

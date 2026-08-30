@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"io"
 	"net"
@@ -9,9 +8,34 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 const configFile = "backends.conf"
+
+type Server struct {
+	ListenAddress string `yaml:"listen_address"`
+}
+type LoadBalancer struct {
+	Algorithm         string `yaml:"algorithm"`
+	ConnectionTimeout string `yaml:"connection_timeout"`
+}
+type HealthCheck struct {
+	Enabled  bool   `yaml:"enabled"`
+	Timeout  string `yaml:"timeout"`
+	Interval string `yaml:"interval"`
+}
+type PrintStatus struct {
+	Enabled bool `yaml:"enabled"`
+}
+type Config struct {
+	Server       Server       `yaml:"server"`
+	LoadBalancer LoadBalancer `yaml:"load_balancer"`
+	HealthCheck  HealthCheck  `yaml:"health_check"`
+	PrintStatus  PrintStatus  `yaml:"print_status"`
+	Backends     []string     `yaml:"backends"`
+}
 
 type Backend struct {
 	address           string
@@ -28,7 +52,23 @@ type ClientHandler struct {
 	mu sync.Mutex
 }
 
-func connectBackend(pool *BackendPool) (*Backend, net.Conn) {
+func loadConfig(filename string) (Config, error) {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return Config{}, err
+	}
+
+	var config Config
+
+	err = yaml.Unmarshal(data, &config)
+	if err != nil {
+		return Config{}, err
+	}
+
+	return config, nil
+}
+
+func connectBackend(pool *BackendPool, connectionTimeout time.Duration) (*Backend, net.Conn) {
 	for {
 		backendInfo := pool.AcquireBackend()
 
@@ -36,7 +76,7 @@ func connectBackend(pool *BackendPool) (*Backend, net.Conn) {
 			return nil, nil
 		}
 
-		conn, err := net.DialTimeout("tcp", backendInfo.address, 1*time.Second)
+		conn, err := net.DialTimeout("tcp", backendInfo.address, connectionTimeout)
 		if err == nil {
 			return backendInfo, conn
 		}
@@ -48,12 +88,12 @@ func connectBackend(pool *BackendPool) (*Backend, net.Conn) {
 	}
 }
 
-func connectClientToBackend(conn net.Conn, pool *BackendPool) {
+func connectClientToBackend(conn net.Conn, pool *BackendPool, timeout time.Duration) {
 	defer conn.Close()
 
 	// fmt.Println("Forwarding to:", backendInfo.address)
 
-	backendInfo, backend := connectBackend(pool)
+	backendInfo, backend := connectBackend(pool, timeout)
 
 	if backendInfo == nil {
 		fmt.Println("No healthy backend available")
@@ -90,20 +130,35 @@ func connectClientToBackend(conn net.Conn, pool *BackendPool) {
 
 }
 
-func loadBackends(filename string) ([]Backend, error) {
-	file, err := os.Open(filename)
-	if err != nil {
-		fmt.Println("Error on loading config file")
-		return nil, err
-	}
-	defer file.Close()
+func loadBackends(config Config) ([]Backend, error) {
+	// file, err := os.Open(filename)
+	// if err != nil {
+	// 	fmt.Println("Error on loading config file")
+	// 	return nil, err
+	// }
+	// defer file.Close()
 
 	var backends []Backend
 
-	scanner := bufio.NewScanner(file)
+	// scanner := bufio.NewScanner(file)
 
-	for scanner.Scan() {
-		addr := strings.TrimSpace(scanner.Text())
+	// for scanner.Scan() {
+	// 	addr := strings.TrimSpace(scanner.Text())
+	// 	if addr == "" {
+	// 		continue
+	// 	}
+	// 	backends = append(backends, Backend{
+	// 		address:           addr,
+	// 		activeConnections: 0,
+	// 		healthy:           true,
+	// 	})
+	// }
+	// if err := scanner.Err(); err != nil {
+	// 	return nil, err
+	// }
+
+	for _, backend := range config.Backends {
+		addr := strings.TrimSpace(backend)
 		if addr == "" {
 			continue
 		}
@@ -113,24 +168,20 @@ func loadBackends(filename string) ([]Backend, error) {
 			healthy:           true,
 		})
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-
 	if len(backends) == 0 {
-		panic("no active backend found")
+		return nil, fmt.Errorf("no active backend found")
 	}
 
 	return backends, nil
 }
 
-func activeHealthCheck(p *BackendPool) {
-	ticker := time.NewTicker(5 * time.Second)
+func activeHealthCheck(p *BackendPool, interval time.Duration, timeout time.Duration) {
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		for i := range p.backends {
 			backend := &p.backends[i]
-			conn, err := net.DialTimeout("tcp", backend.address, 1*time.Second)
+			conn, err := net.DialTimeout("tcp", backend.address, timeout)
 			healthy := err == nil
 
 			if conn != nil {
@@ -201,7 +252,14 @@ func (p *BackendPool) PrintStatus() {
 
 func main() {
 
-	backends, err := loadBackends(configFile)
+	filename := "config.yaml"
+	config, err := loadConfig(filename)
+	if err != nil {
+		fmt.Println("Error loading config:", err)
+		panic(err)
+	}
+
+	backends, err := loadBackends(config)
 	if err != nil {
 		fmt.Println("No backend configured")
 		panic(err)
@@ -211,12 +269,33 @@ func main() {
 		backends: backends,
 	}
 
-	go activeHealthCheck(&pool)
-	//function to test client connnections using loadTest file
-	go pool.PrintStatus()
+	if config.HealthCheck.Enabled {
+		interval, err := time.ParseDuration(config.HealthCheck.Interval)
+		if err != nil {
+			panic(err)
+		}
+
+		timeout, err := time.ParseDuration(config.HealthCheck.Timeout)
+		if err != nil {
+			panic(err)
+		}
+
+		go activeHealthCheck(&pool, interval, timeout)
+
+	}
+
+	connectionTimeout, err := time.ParseDuration(config.LoadBalancer.ConnectionTimeout)
+	if err != nil {
+		panic(err)
+	}
+
+	if config.PrintStatus.Enabled {
+		//function to test client connnections using loadTest file
+		go pool.PrintStatus()
+	}
 
 	//load balancer's listen
-	lb_listener, err := net.Listen("tcp", "localhost:8080")
+	lb_listener, err := net.Listen("tcp", config.Server.ListenAddress)
 	if err != nil {
 		fmt.Println("Error on load balancer listen")
 		panic(err)
@@ -224,7 +303,7 @@ func main() {
 
 	defer lb_listener.Close()
 
-	fmt.Println("Server listening on port :8080")
+	fmt.Println("Server listening on", config.Server.ListenAddress)
 
 	for {
 		conn, err := lb_listener.Accept()
@@ -234,7 +313,7 @@ func main() {
 		}
 		// fmt.Println("Client connected ", conn.RemoteAddr())
 
-		go connectClientToBackend(conn, &pool)
+		go connectClientToBackend(conn, &pool, connectionTimeout)
 	}
 
 }
