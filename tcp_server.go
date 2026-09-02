@@ -5,8 +5,10 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -131,32 +133,8 @@ func connectClientToBackend(conn net.Conn, pool *BackendPool, timeout time.Durat
 }
 
 func loadBackends(config Config) ([]Backend, error) {
-	// file, err := os.Open(filename)
-	// if err != nil {
-	// 	fmt.Println("Error on loading config file")
-	// 	return nil, err
-	// }
-	// defer file.Close()
 
 	var backends []Backend
-
-	// scanner := bufio.NewScanner(file)
-
-	// for scanner.Scan() {
-	// 	addr := strings.TrimSpace(scanner.Text())
-	// 	if addr == "" {
-	// 		continue
-	// 	}
-	// 	backends = append(backends, Backend{
-	// 		address:           addr,
-	// 		activeConnections: 0,
-	// 		healthy:           true,
-	// 	})
-	// }
-	// if err := scanner.Err(); err != nil {
-	// 	return nil, err
-	// }
-
 	for _, backend := range config.Backends {
 		addr := strings.TrimSpace(backend)
 		if addr == "" {
@@ -175,22 +153,26 @@ func loadBackends(config Config) ([]Backend, error) {
 	return backends, nil
 }
 
-func activeHealthCheck(p *BackendPool, interval time.Duration, timeout time.Duration) {
+func activeHealthCheck(p *BackendPool, interval time.Duration, timeout time.Duration, shutdown <-chan struct{}) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
-		for i := range p.backends {
-			backend := &p.backends[i]
-			conn, err := net.DialTimeout("tcp", backend.address, timeout)
-			healthy := err == nil
+		select {
+		case <-ticker.C:
+			for i := range p.backends {
+				backend := &p.backends[i]
+				conn, err := net.DialTimeout("tcp", backend.address, timeout)
+				healthy := err == nil
 
-			if conn != nil {
-				conn.Close()
+				if conn != nil {
+					conn.Close()
+				}
+
+				p.SetHealth(backend, healthy)
 			}
-
-			p.SetHealth(backend, healthy)
+		case <-shutdown:
+			return
 		}
-		<-ticker.C
 	}
 }
 
@@ -231,22 +213,28 @@ func (p *BackendPool) SetHealth(backend *Backend, health bool) {
 	backend.healthy = health
 }
 
-func (p *BackendPool) PrintStatus() {
+func (p *BackendPool) PrintStatus(shutdown chan struct{}) {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
 	for {
-		time.Sleep(1 * time.Second)
+		select {
+		case <-ticker.C:
+			p.mu.Lock()
 
-		p.mu.Lock()
-
-		fmt.Println("\n--- Backend Status ---")
-		for _, backend := range p.backends {
-			if backend.healthy {
-				fmt.Printf("%s -> %d active connections\n", backend.address, backend.activeConnections)
-			} else {
-				fmt.Printf("%s -> Unhealthy\n", backend.address)
+			fmt.Println("\n--- Backend Status ---")
+			for _, backend := range p.backends {
+				if backend.healthy {
+					fmt.Printf("%s -> %d active connections\n", backend.address, backend.activeConnections)
+				} else {
+					fmt.Printf("%s -> Unhealthy\n", backend.address)
+				}
 			}
+
+			p.mu.Unlock()
+		case <-shutdown:
+			return
 		}
 
-		p.mu.Unlock()
 	}
 }
 
@@ -269,6 +257,26 @@ func main() {
 		backends: backends,
 	}
 
+	connectionTimeout, err := time.ParseDuration(config.LoadBalancer.ConnectionTimeout)
+	if err != nil {
+		panic(err)
+	}
+
+	//load balancer's listen
+	lb_listener, err := net.Listen("tcp", config.Server.ListenAddress)
+	if err != nil {
+		fmt.Println("Error on load balancer listen")
+		panic(err)
+	}
+	defer lb_listener.Close()
+	fmt.Println("Server listening on", config.Server.ListenAddress)
+
+	var wg sync.WaitGroup
+	signalChannel := make(chan os.Signal, 1)
+	signal.Notify(signalChannel, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signalChannel)
+
+	shutdown := make(chan struct{})
 	if config.HealthCheck.Enabled {
 		interval, err := time.ParseDuration(config.HealthCheck.Interval)
 		if err != nil {
@@ -280,40 +288,50 @@ func main() {
 			panic(err)
 		}
 
-		go activeHealthCheck(&pool, interval, timeout)
+		go activeHealthCheck(&pool, interval, timeout, shutdown)
 
-	}
-
-	connectionTimeout, err := time.ParseDuration(config.LoadBalancer.ConnectionTimeout)
-	if err != nil {
-		panic(err)
 	}
 
 	if config.PrintStatus.Enabled {
 		//function to test client connnections using loadTest file
-		go pool.PrintStatus()
+		go pool.PrintStatus(shutdown)
 	}
 
-	//load balancer's listen
-	lb_listener, err := net.Listen("tcp", config.Server.ListenAddress)
-	if err != nil {
-		fmt.Println("Error on load balancer listen")
-		panic(err)
-	}
+	// Wait for the shutdown signal and then close the listener.
+	go func() {
+		<-signalChannel
 
-	defer lb_listener.Close()
+		fmt.Println("\nShutdown requested")
 
-	fmt.Println("Server listening on", config.Server.ListenAddress)
+		close(shutdown)
+		lb_listener.Close()
+	}()
 
 	for {
 		conn, err := lb_listener.Accept()
-		if err != nil {
-			fmt.Println("Error on accept")
-			continue
-		}
 		// fmt.Println("Client connected ", conn.RemoteAddr())
-
-		go connectClientToBackend(conn, &pool, connectionTimeout)
+		if err != nil {
+			select {
+			case <-shutdown:
+				goto shutdown
+			default:
+				fmt.Println("Error on accept :", err)
+				continue
+			}
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			connectClientToBackend(conn, &pool, connectionTimeout)
+		}()
 	}
+
+shutdown:
+	fmt.Println("Stopped accepting new connections")
+	fmt.Println("Waiting for active connections to finish...")
+
+	wg.Wait()
+
+	fmt.Println("All active connections finished. Server stopped.")
 
 }
