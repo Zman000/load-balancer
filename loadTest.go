@@ -33,7 +33,7 @@ func client(id int, wg *sync.WaitGroup) {
 	}
 
 	// waiting for random time to make connection feel alive
-	delay := time.Duration(rand.Intn(5000)+1000) * time.Millisecond
+	delay := time.Duration(rand.Intn(5000)) * time.Millisecond
 
 	fmt.Printf("Client %d: connected, staying for %v\n", id, delay)
 

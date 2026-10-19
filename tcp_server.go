@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -13,8 +14,6 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
-
-const configFile = "backends.conf"
 
 type Server struct {
 	ListenAddress string `yaml:"listen_address"`
@@ -105,8 +104,14 @@ func connectClientToBackend(conn net.Conn, pool *BackendPool, timeout time.Durat
 	defer pool.ReleaseBackend(backendInfo)
 	defer backend.Close()
 
+	// Add deadline to this connection (5 min)
+	deadline := time.Now().Add(5 * time.Minute)
+	conn.SetDeadline(deadline)
+	backend.SetDeadline(deadline)
+
 	//use io functions to handle concurrent reading/writing
 	res := make(chan error, 2)
+
 	go func() {
 		_, err := io.Copy(conn, backend)
 		if tcp, ok := conn.(*net.TCPConn); ok {
@@ -127,9 +132,12 @@ func connectClientToBackend(conn net.Conn, pool *BackendPool, timeout time.Durat
 		res <- err
 	}()
 
-	<-res
-	<-res
-
+	for i := 0; i < 2; i++ {
+		err := <-res
+		if err != nil && err != io.EOF {
+			fmt.Println("Proxy copy error", err)
+		}
+	}
 }
 
 func loadBackends(config Config) ([]Backend, error) {
@@ -171,6 +179,7 @@ func activeHealthCheck(p *BackendPool, interval time.Duration, timeout time.Dura
 				p.SetHealth(backend, healthy)
 			}
 		case <-shutdown:
+
 			return
 		}
 	}
@@ -213,7 +222,8 @@ func (p *BackendPool) SetHealth(backend *Backend, health bool) {
 	backend.healthy = health
 }
 
-func (p *BackendPool) PrintStatus(shutdown chan struct{}) {
+// recieve only channel
+func (p *BackendPool) PrintStatus(shutdown <-chan struct{}) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -240,6 +250,8 @@ func (p *BackendPool) PrintStatus(shutdown chan struct{}) {
 
 func main() {
 
+	const maxConnections = 500
+
 	filename := "config.yaml"
 	config, err := loadConfig(filename)
 	if err != nil {
@@ -262,13 +274,18 @@ func main() {
 		panic(err)
 	}
 
+	connectionSemaphore := make(chan struct{}, maxConnections)
+
+	activeConns := make(map[net.Conn]struct{})
+	var activeConnsMu sync.Mutex
+
 	//load balancer's listen
-	lb_listener, err := net.Listen("tcp", config.Server.ListenAddress)
+	lbListener, err := net.Listen("tcp", config.Server.ListenAddress)
 	if err != nil {
 		fmt.Println("Error on load balancer listen")
 		panic(err)
 	}
-	defer lb_listener.Close()
+	defer lbListener.Close()
 	fmt.Println("Server listening on", config.Server.ListenAddress)
 
 	var wg sync.WaitGroup
@@ -304,11 +321,11 @@ func main() {
 		fmt.Println("\nShutdown requested")
 
 		close(shutdown)
-		lb_listener.Close()
+		lbListener.Close()
 	}()
 
 	for {
-		conn, err := lb_listener.Accept()
+		conn, err := lbListener.Accept()
 		// fmt.Println("Client connected ", conn.RemoteAddr())
 		if err != nil {
 			select {
@@ -319,9 +336,33 @@ func main() {
 				continue
 			}
 		}
+
+		select {
+		case connectionSemaphore <- struct{}{}:
+
+		default:
+			//maximum number of connection reached
+			fmt.Println("Reached connection limit")
+			conn.Close()
+			continue
+		}
+
+		activeConnsMu.Lock()
+		activeConns[conn] = struct{}{}
+		activeConnsMu.Unlock()
+
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			// Return the semaphore slot.
+			defer func() {
+				<-connectionSemaphore
+			}()
+			defer func() {
+				activeConnsMu.Lock()
+				delete(activeConns, conn)
+				activeConnsMu.Unlock()
+			}()
 			connectClientToBackend(conn, &pool, connectionTimeout)
 		}()
 	}
@@ -329,9 +370,27 @@ func main() {
 shutdown:
 	fmt.Println("Stopped accepting new connections")
 	fmt.Println("Waiting for active connections to finish...")
+	//create context for 30 seconds
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
-	wg.Wait()
+	//channel to signal when all goroutines are finished (on their own)
+	waitCh := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(waitCh)
+	}()
 
-	fmt.Println("All active connections finished. Server stopped.")
+	select {
+	case <-waitCh:
+		fmt.Println("All active connections finished gracefully. Server stopped.")
+	case <-ctx.Done():
+		fmt.Println("Shutdown timeout reached. Force closing all connections")
+		activeConnsMu.Lock()
+		for conn := range activeConns {
+			conn.Close()
+		}
+		activeConnsMu.Unlock()
+	}
 
 }
