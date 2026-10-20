@@ -42,6 +42,9 @@ type Backend struct {
 	address           string
 	activeConnections int
 	healthy           bool
+	failures          int
+	state             BreakerState
+	tripTime          time.Time
 }
 
 type BackendPool struct {
@@ -58,6 +61,39 @@ type ClientHandler struct {
 type copyResult struct {
 	err   error
 	bytes int64
+}
+
+type BreakerState string
+
+const (
+	StateClosed     BreakerState = "closed"
+	StateOpen       BreakerState = "open"
+	StateHalfOpen   BreakerState = "half-open"
+	MaxFailures                  = 3
+	BreakerCooldown              = 5 * time.Second
+)
+
+func (p *BackendPool) RecordSuccess(backend *Backend) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	backend.failures = 0
+	backend.state = StateClosed
+}
+
+func (p *BackendPool) RecordFailure(backend *Backend) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if backend.state == StateOpen {
+		return
+	}
+
+	backend.failures++
+	if backend.failures >= MaxFailures {
+		backend.state = StateOpen
+		backend.tripTime = time.Now()
+		fmt.Printf("Circuit breaker tripped OPEN for %s\n", backend.address)
+	}
 }
 
 func loadConfig(filename string) (Config, error) {
@@ -86,13 +122,15 @@ func connectBackend(pool *BackendPool, connectionTimeout time.Duration) (*Backen
 
 		conn, err := net.DialTimeout("tcp", backendInfo.address, connectionTimeout)
 		if err == nil {
+			pool.RecordSuccess(backendInfo)
 			return backendInfo, conn
 		}
 
 		fmt.Printf("Backend %s is unreachable : %v\n", backendInfo.address, err)
 
 		pool.ReleaseBackend(backendInfo)
-		pool.SetHealth(backendInfo, false)
+		pool.RecordFailure(backendInfo)
+		// pool.SetHealth(backendInfo, false)
 	}
 }
 
@@ -172,6 +210,7 @@ func loadBackends(config Config) ([]Backend, error) {
 			address:           addr,
 			activeConnections: 0,
 			healthy:           true,
+			state:             StateClosed,
 		})
 	}
 	if len(backends) == 0 {
@@ -209,11 +248,25 @@ func (p *BackendPool) AcquireBackend() *Backend {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	isEligible := func(b *Backend) bool {
+		if !b.healthy {
+			return false
+		}
+		if b.state == StateOpen {
+			if time.Since(b.tripTime) > BreakerCooldown {
+				b.state = StateHalfOpen
+				fmt.Printf("Circuit breaker HALF-OPEN for %s\n", b.address)
+				return true
+			}
+			return false
+		}
+		return true
+	}
 	var backend *Backend
 	if p.algorithm == "round_robin" {
 		for i := 0; i < len(p.backends); i++ {
 			idx := (p.roundRobinIdx + i) % len(p.backends)
-			if p.backends[idx].healthy {
+			if isEligible(&p.backends[idx]) {
 				backend = &p.backends[idx]
 				p.roundRobinIdx = (idx + 1) % len(p.backends)
 				break
@@ -221,7 +274,7 @@ func (p *BackendPool) AcquireBackend() *Backend {
 		}
 	} else {
 		for i := range p.backends {
-			if !p.backends[i].healthy {
+			if !isEligible(&p.backends[i]) {
 				continue
 			}
 
