@@ -45,12 +45,19 @@ type Backend struct {
 }
 
 type BackendPool struct {
-	mu       sync.Mutex
-	backends []Backend
+	mu            sync.Mutex
+	backends      []Backend
+	roundRobinIdx int
+	algorithm     string
 }
 
 type ClientHandler struct {
 	mu sync.Mutex
+}
+
+type copyResult struct {
+	err   error
+	bytes int64
 }
 
 func loadConfig(filename string) (Config, error) {
@@ -90,6 +97,9 @@ func connectBackend(pool *BackendPool, connectionTimeout time.Duration) (*Backen
 }
 
 func connectClientToBackend(conn net.Conn, pool *BackendPool, timeout time.Duration) {
+	// Record the timestamp at accept/start
+	startTime := time.Now()
+
 	defer conn.Close()
 
 	// fmt.Println("Forwarding to:", backendInfo.address)
@@ -97,7 +107,7 @@ func connectClientToBackend(conn net.Conn, pool *BackendPool, timeout time.Durat
 	backendInfo, backend := connectBackend(pool, timeout)
 
 	if backendInfo == nil {
-		fmt.Println("No healthy backend available")
+		fmt.Printf("%s,NONE,0,0,error_no_backend\n", time.Now().Format(time.RFC3339))
 		return
 	}
 
@@ -109,35 +119,45 @@ func connectClientToBackend(conn net.Conn, pool *BackendPool, timeout time.Durat
 	conn.SetDeadline(deadline)
 	backend.SetDeadline(deadline)
 
-	//use io functions to handle concurrent reading/writing
-	res := make(chan error, 2)
+	//use struct channel to get both error and byte count
+	res := make(chan copyResult, 2)
 
 	go func() {
-		_, err := io.Copy(conn, backend)
+		n, err := io.Copy(conn, backend)
 		if tcp, ok := conn.(*net.TCPConn); ok {
 			if closeErr := tcp.CloseWrite(); err == nil {
 				err = closeErr
 			}
 		}
-		res <- err
+		res <- copyResult{err: err, bytes: n}
 	}()
 
 	go func() {
-		_, err := io.Copy(backend, conn)
+		n, err := io.Copy(backend, conn)
 		if tcp, ok := backend.(*net.TCPConn); ok {
 			if closeErr := tcp.CloseWrite(); err == nil {
 				err = closeErr
 			}
 		}
-		res <- err
+		res <- copyResult{err: err, bytes: n}
 	}()
 
+	var totalBytes int64
+	status := "success"
+
 	for i := 0; i < 2; i++ {
-		err := <-res
-		if err != nil && err != io.EOF {
-			fmt.Println("Proxy copy error", err)
+		result := <-res
+		totalBytes += result.bytes
+		if result.err != nil && result.err != io.EOF {
+			status = "error"
 		}
 	}
+
+	duration := time.Since(startTime).Milliseconds()
+	timestamp := time.Now().Format(time.RFC3339)
+
+	// Output CSV line: timestamp,backend,duration_ms,bytes,status
+	fmt.Printf("%s,%s,%d,%d,%s\n", timestamp, backendInfo.address, duration, totalBytes, status)
 }
 
 func loadBackends(config Config) ([]Backend, error) {
@@ -190,14 +210,24 @@ func (p *BackendPool) AcquireBackend() *Backend {
 	defer p.mu.Unlock()
 
 	var backend *Backend
-
-	for i := range p.backends {
-		if !p.backends[i].healthy {
-			continue
+	if p.algorithm == "round_robin" {
+		for i := 0; i < len(p.backends); i++ {
+			idx := (p.roundRobinIdx + i) % len(p.backends)
+			if p.backends[idx].healthy {
+				backend = &p.backends[idx]
+				p.roundRobinIdx = (idx + 1) % len(p.backends)
+				break
+			}
 		}
+	} else {
+		for i := range p.backends {
+			if !p.backends[i].healthy {
+				continue
+			}
 
-		if backend == nil || backend.activeConnections > p.backends[i].activeConnections {
-			backend = &p.backends[i]
+			if backend == nil || backend.activeConnections > p.backends[i].activeConnections {
+				backend = &p.backends[i]
+			}
 		}
 	}
 
@@ -266,7 +296,8 @@ func main() {
 	}
 
 	pool := BackendPool{
-		backends: backends,
+		backends:  backends,
+		algorithm: config.LoadBalancer.Algorithm,
 	}
 
 	connectionTimeout, err := time.ParseDuration(config.LoadBalancer.ConnectionTimeout)

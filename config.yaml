@@ -2,7 +2,7 @@ server:
     listen_address: "localhost:8080"
 
 load_balancer:
-    algorithm: "least_connections"
+    algorithm: "round_robin"
     connection_timeout: "1s"
 
 health_check:
@@ -17,3 +17,4 @@ backends:
     - "localhost:9000"
     - "localhost:9001"
     - "localhost:9002"
+    - "localhost:9003"

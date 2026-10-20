@@ -1,0 +1,159 @@
+D:\Programming\LoadBalancer\LB>go run loadTest.go -clients 10 -payload 1024 -rampup 10ms -csv results_1b_10c.csv
+Starting benchmark: 10 clients, 1024 byte payload, targeting localhost:8080
+
+--- Benchmark Summary ---
+Total Requests: 10
+Successes:      10
+Failures:       0
+p50 Latency:    304.00 ms
+p95 Latency:    317.00 ms
+p99 Latency:    317.00 ms
+
+Raw results written to results_1b_10c.csv
+
+D:\Programming\LoadBalancer\LB>go run loadTest.go -clients 100 -payload 1024 -rampup 5ms -csv results_1b_100c.csv
+Starting benchmark: 100 clients, 1024 byte payload, targeting localhost:8080
+
+--- Benchmark Summary ---
+Total Requests: 100
+Successes:      100
+Failures:       0
+p50 Latency:    302.00 ms
+p95 Latency:    304.00 ms
+p99 Latency:    316.00 ms
+
+Raw results written to results_1b_100c.csv
+
+D:\Programming\LoadBalancer\LB>go run loadTest.go -clients 500 -payload 1024 -rampup 2ms -csv results_1b_500c.csv  
+Starting benchmark: 500 clients, 1024 byte payload, targeting localhost:8080
+
+--- Benchmark Summary ---
+Total Requests: 500
+Successes:      500
+Failures:       0
+p50 Latency:    301.00 ms
+p95 Latency:    305.00 ms
+p99 Latency:    314.00 ms
+
+Raw results written to results_1b_500c.csv
+
+D:\Programming\LoadBalancer\LB>go run loadTest.go -clients 2000 -payload 1024 -rampup 1ms -csv results_1b_2000c.csv
+Starting benchmark: 2000 clients, 1024 byte payload, targeting localhost:8080
+
+--- Benchmark Summary ---
+Total Requests: 2000
+Successes:      2000
+Failures:       0
+p50 Latency:    301.00 ms
+p95 Latency:    314.00 ms
+p99 Latency:    1109.00 ms
+
+Raw results written to results_1b_2000c.csv
+
+-----------------------------------------------------------------------------------------------------------------------
+
+D:\Programming\LoadBalancer\LB>go run loadTest.go -clients 10 -payload 1024 -rampup 10ms -csv results_2b_10c.csv   
+Starting benchmark: 10 clients, 1024 byte payload, targeting localhost:8080
+
+--- Benchmark Summary ---
+Total Requests: 10
+Successes:      10
+Failures:       0
+p50 Latency:    305.00 ms
+p95 Latency:    318.00 ms
+p99 Latency:    318.00 ms
+
+Raw results written to results_2b_10c.csv
+
+D:\Programming\LoadBalancer\LB>go run loadTest.go -clients 100 -payload 1024 -rampup 5ms -csv results_2b_100c.csv  
+Starting benchmark: 100 clients, 1024 byte payload, targeting localhost:8080
+
+--- Benchmark Summary ---
+Total Requests: 100
+Successes:      100
+Failures:       0
+p50 Latency:    302.00 ms
+p95 Latency:    308.00 ms
+p99 Latency:    319.00 ms
+
+Raw results written to results_2b_100c.csv
+
+D:\Programming\LoadBalancer\LB>go run loadTest.go -clients 500 -payload 1024 -rampup 2ms -csv results_2b_500c.csv  
+Starting benchmark: 500 clients, 1024 byte payload, targeting localhost:8080
+
+--- Benchmark Summary ---
+Total Requests: 500
+Successes:      500
+Failures:       0
+p50 Latency:    302.00 ms
+p95 Latency:    321.00 ms
+p99 Latency:    343.00 ms
+
+Raw results written to results_2b_500c.csv
+
+D:\Programming\LoadBalancer\LB>go run loadTest.go -clients 2000 -payload 1024 -rampup 1ms -csv results_2b_2000c.csv
+Starting benchmark: 2000 clients, 1024 byte payload, targeting localhost:8080
+
+--- Benchmark Summary ---
+Total Requests: 2000
+Successes:      2000
+Failures:       0
+p50 Latency:    302.00 ms
+p95 Latency:    314.00 ms
+p99 Latency:    336.00 ms
+
+Raw results written to results_2b_2000c.csv
+
+-----------------------------------------------------------------------------------------------------------------------
+
+D:\Programming\LoadBalancer\LB>go run loadTest.go -clients 10 -payload 1024 -rampup 10ms -csv results_4b_10c.csv   
+Starting benchmark: 10 clients, 1024 byte payload, targeting localhost:8080
+
+--- Benchmark Summary ---
+Total Requests: 10
+Successes:      10
+Failures:       0
+p50 Latency:    304.00 ms
+p95 Latency:    318.00 ms
+p99 Latency:    318.00 ms
+
+Raw results written to results_4b_10c.csv
+
+D:\Programming\LoadBalancer\LB>go run loadTest.go -clients 100 -payload 1024 -rampup 5ms -csv results_4b_100c.csv  
+Starting benchmark: 100 clients, 1024 byte payload, targeting localhost:8080
+
+--- Benchmark Summary ---
+Total Requests: 100
+Successes:      100
+Failures:       0
+p50 Latency:    302.00 ms
+p95 Latency:    305.00 ms
+p99 Latency:    319.00 ms
+
+Raw results written to results_4b_100c.csv
+
+D:\Programming\LoadBalancer\LB>go run loadTest.go -clients 500 -payload 1024 -rampup 2ms -csv results_4b_500c.csv  
+Starting benchmark: 500 clients, 1024 byte payload, targeting localhost:8080
+
+--- Benchmark Summary ---
+Total Requests: 500
+Successes:      500
+Failures:       0
+p50 Latency:    301.00 ms
+p95 Latency:    304.00 ms
+p99 Latency:    313.00 ms
+
+Raw results written to results_4b_500c.csv
+
+D:\Programming\LoadBalancer\LB>go run loadTest.go -clients 2000 -payload 1024 -rampup 1ms -csv results_4b_2000c.csv
+Starting benchmark: 2000 clients, 1024 byte payload, targeting localhost:8080
+
+--- Benchmark Summary ---
+Total Requests: 2000
+Successes:      2000
+Failures:       0
+p50 Latency:    301.00 ms
+p95 Latency:    313.00 ms
+p99 Latency:    365.00 ms
+
+Raw results written to results_4b_2000c.csv
