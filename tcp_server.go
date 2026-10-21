@@ -17,7 +17,7 @@ import (
 
 type Server struct {
 	ListenAddress  string `yaml:"listen_address"`
-	MaxConnections int    `yaml:max_connections`
+	MaxConnections int    `yaml:"max_connections"`
 }
 type LoadBalancer struct {
 	Algorithm         string `yaml:"algorithm"`
@@ -35,13 +35,23 @@ type RateDecider struct {
 	RequestsPerSecond int `yaml:"requests_per_sec"`
 	BurstCapacity     int `yaml:"burst_cap"`
 }
+type CircuitBreakerConfig struct {
+	MaxFailures int    `yaml:"max_failures"`
+	Cooldown    string `yaml:"cooldown"`
+}
+type RetryConfig struct {
+	MaxRetries     int    `yaml:"max_retries"`
+	InitialBackoff string `yaml:"initial_backoff"`
+}
 type Config struct {
-	Server       Server       `yaml:"server"`
-	LoadBalancer LoadBalancer `yaml:"load_balancer"`
-	HealthCheck  HealthCheck  `yaml:"health_check"`
-	PrintStatus  PrintStatus  `yaml:"print_status"`
-	RateDecider  RateDecider  `yaml:"rate_limit"`
-	Backends     []string     `yaml:"backends"`
+	Server         Server               `yaml:"server"`
+	LoadBalancer   LoadBalancer         `yaml:"load_balancer"`
+	HealthCheck    HealthCheck          `yaml:"health_check"`
+	PrintStatus    PrintStatus          `yaml:"print_status"`
+	RateDecider    RateDecider          `yaml:"rate_limit"`
+	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
+	Retry          RetryConfig          `yaml:"retry"`
+	Backends       []string             `yaml:"backends"`
 }
 
 type Backend struct {
@@ -58,6 +68,8 @@ type BackendPool struct {
 	backends      []Backend
 	roundRobinIdx int
 	algorithm     string
+	cbMaxFailures int
+	cbCooldown    time.Duration
 }
 
 type ClientHandler struct {
@@ -72,11 +84,9 @@ type copyResult struct {
 type BreakerState string
 
 const (
-	StateClosed     BreakerState = "closed"
-	StateOpen       BreakerState = "open"
-	StateHalfOpen   BreakerState = "half-open"
-	MaxFailures                  = 3
-	BreakerCooldown              = 5 * time.Second
+	StateClosed   BreakerState = "closed"
+	StateOpen     BreakerState = "open"
+	StateHalfOpen BreakerState = "half-open"
 )
 
 func (p *BackendPool) RecordSuccess(backend *Backend) {
@@ -95,7 +105,7 @@ func (p *BackendPool) RecordFailure(backend *Backend) {
 	}
 
 	backend.failures++
-	if backend.failures >= MaxFailures {
+	if backend.failures >= p.cbMaxFailures {
 		backend.state = StateOpen
 		backend.tripTime = time.Now()
 		fmt.Printf("Circuit breaker tripped OPEN for %s\n", backend.address)
@@ -155,6 +165,7 @@ func (rl *RateLimiter) Allow(ip string) bool {
 	}
 	return false
 }
+
 func loadConfig(filename string) (Config, error) {
 	data, err := os.ReadFile(filename)
 	if err != nil {
@@ -171,8 +182,10 @@ func loadConfig(filename string) (Config, error) {
 	return config, nil
 }
 
-func connectBackend(pool *BackendPool, connectionTimeout time.Duration) (*Backend, net.Conn) {
-	for {
+func connectBackend(pool *BackendPool, connectionTimeout time.Duration, maxRetries int, initialBackoff time.Duration) (*Backend, net.Conn) {
+	backoff := initialBackoff
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
 		backendInfo := pool.AcquireBackend()
 
 		if backendInfo == nil {
@@ -189,11 +202,18 @@ func connectBackend(pool *BackendPool, connectionTimeout time.Duration) (*Backen
 
 		pool.ReleaseBackend(backendInfo)
 		pool.RecordFailure(backendInfo)
+
+		if attempt < maxRetries {
+			fmt.Printf("Connection failed. Retrying in %v...\n", backoff)
+			time.Sleep(backoff)
+			backoff *= 2
+		}
 		// pool.SetHealth(backendInfo, false)
 	}
+	return nil, nil
 }
 
-func connectClientToBackend(conn net.Conn, pool *BackendPool, timeout time.Duration) {
+func connectClientToBackend(conn net.Conn, pool *BackendPool, timeout time.Duration, maxRetries int, initialBackoff time.Duration) {
 	// Record the timestamp at accept/start
 	startTime := time.Now()
 
@@ -201,7 +221,7 @@ func connectClientToBackend(conn net.Conn, pool *BackendPool, timeout time.Durat
 
 	// fmt.Println("Forwarding to:", backendInfo.address)
 
-	backendInfo, backend := connectBackend(pool, timeout)
+	backendInfo, backend := connectBackend(pool, timeout, maxRetries, initialBackoff)
 
 	if backendInfo == nil {
 		fmt.Printf("%s,NONE,0,0,error_no_backend\n", time.Now().Format(time.RFC3339))
@@ -312,7 +332,7 @@ func (p *BackendPool) AcquireBackend() *Backend {
 			return false
 		}
 		if b.state == StateOpen {
-			if time.Since(b.tripTime) > BreakerCooldown {
+			if time.Since(b.tripTime) > p.cbCooldown {
 				b.state = StateHalfOpen
 				fmt.Printf("Circuit breaker HALF-OPEN for %s\n", b.address)
 				return true
@@ -400,10 +420,17 @@ func main() {
 	}
 
 	maxConnections := config.Server.MaxConnections
-
-	// Initialize Rate Limiter: 100 requests per second, burst capacity of 50
 	limiter := NewRateLimiter(float64(config.RateDecider.RequestsPerSecond), float64(config.RateDecider.BurstCapacity))
 
+	cbCooldown, err := time.ParseDuration(config.CircuitBreaker.Cooldown)
+	if err != nil {
+		panic(err)
+	}
+
+	intitialBackoff, err := time.ParseDuration(config.Retry.InitialBackoff)
+	if err != nil {
+		panic(err)
+	}
 	backends, err := loadBackends(config)
 	if err != nil {
 		fmt.Println("No backend configured")
@@ -411,8 +438,10 @@ func main() {
 	}
 
 	pool := BackendPool{
-		backends:  backends,
-		algorithm: config.LoadBalancer.Algorithm,
+		backends:      backends,
+		algorithm:     config.LoadBalancer.Algorithm,
+		cbMaxFailures: config.CircuitBreaker.MaxFailures,
+		cbCooldown:    cbCooldown,
 	}
 
 	connectionTimeout, err := time.ParseDuration(config.LoadBalancer.ConnectionTimeout)
@@ -440,6 +469,8 @@ func main() {
 	defer signal.Stop(signalChannel)
 
 	shutdown := make(chan struct{})
+
+	//active health checks at intervals
 	if config.HealthCheck.Enabled {
 		interval, err := time.ParseDuration(config.HealthCheck.Interval)
 		if err != nil {
@@ -521,7 +552,7 @@ func main() {
 				delete(activeConns, conn)
 				activeConnsMu.Unlock()
 			}()
-			connectClientToBackend(conn, &pool, connectionTimeout)
+			connectClientToBackend(conn, &pool, connectionTimeout, config.Retry.MaxRetries, intitialBackoff)
 		}()
 	}
 
