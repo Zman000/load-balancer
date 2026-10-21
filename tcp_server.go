@@ -16,7 +16,8 @@ import (
 )
 
 type Server struct {
-	ListenAddress string `yaml:"listen_address"`
+	ListenAddress  string `yaml:"listen_address"`
+	MaxConnections int    `yaml:max_connections`
 }
 type LoadBalancer struct {
 	Algorithm         string `yaml:"algorithm"`
@@ -30,11 +31,16 @@ type HealthCheck struct {
 type PrintStatus struct {
 	Enabled bool `yaml:"enabled"`
 }
+type RateDecider struct {
+	RequestsPerSecond int `yaml:"requests_per_sec"`
+	BurstCapacity     int `yaml:"burst_cap"`
+}
 type Config struct {
 	Server       Server       `yaml:"server"`
 	LoadBalancer LoadBalancer `yaml:"load_balancer"`
 	HealthCheck  HealthCheck  `yaml:"health_check"`
 	PrintStatus  PrintStatus  `yaml:"print_status"`
+	RateDecider  RateDecider  `yaml:"rate_limit"`
 	Backends     []string     `yaml:"backends"`
 }
 
@@ -96,6 +102,59 @@ func (p *BackendPool) RecordFailure(backend *Backend) {
 	}
 }
 
+type ClientLimiter struct {
+	tokens     float64
+	lastUpdate time.Time
+}
+
+type RateLimiter struct {
+	mu       sync.Mutex
+	clients  map[string]*ClientLimiter
+	rate     float64
+	capacity float64
+}
+
+func NewRateLimiter(rate, capacity float64) *RateLimiter {
+	if capacity < 1 {
+		capacity = 1 // Prevent negative token initialization
+	}
+	return &RateLimiter{
+		clients:  make(map[string]*ClientLimiter),
+		rate:     rate,
+		capacity: capacity,
+	}
+}
+
+func (rl *RateLimiter) Allow(ip string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now()
+	client, exists := rl.clients[ip]
+	if !exists {
+		// New client gets full capacity minus the current request
+		rl.clients[ip] = &ClientLimiter{
+			tokens:     rl.capacity - 1,
+			lastUpdate: now,
+		}
+		return true
+	}
+
+	//replenish tokens
+	elapsed := now.Sub(client.lastUpdate).Seconds()
+	client.tokens += elapsed * rl.rate
+	if client.tokens > rl.capacity {
+		client.tokens = rl.capacity
+	}
+	client.lastUpdate = now
+
+	//check if allowed
+	if client.tokens >= 1 {
+		client.tokens--
+		return true
+	}
+	return false
+}
 func loadConfig(filename string) (Config, error) {
 	data, err := os.ReadFile(filename)
 	if err != nil {
@@ -333,14 +392,17 @@ func (p *BackendPool) PrintStatus(shutdown <-chan struct{}) {
 
 func main() {
 
-	const maxConnections = 500
-
 	filename := "config.yaml"
 	config, err := loadConfig(filename)
 	if err != nil {
 		fmt.Println("Error loading config:", err)
 		panic(err)
 	}
+
+	maxConnections := config.Server.MaxConnections
+
+	// Initialize Rate Limiter: 100 requests per second, burst capacity of 50
+	limiter := NewRateLimiter(float64(config.RateDecider.RequestsPerSecond), float64(config.RateDecider.BurstCapacity))
 
 	backends, err := loadBackends(config)
 	if err != nil {
@@ -419,6 +481,18 @@ func main() {
 				fmt.Println("Error on accept :", err)
 				continue
 			}
+		}
+
+		clientIP := ""
+		if tcpAddr, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
+			clientIP = tcpAddr.IP.String()
+		}
+
+		if clientIP != "" && !limiter.Allow(clientIP) {
+			fmt.Printf("Rate limit exceeded for %s\n", clientIP)
+			conn.Write([]byte("HTTP/1.1 429 Too Many Requests\r\n\r\n"))
+			conn.Close()
+			continue
 		}
 
 		select {

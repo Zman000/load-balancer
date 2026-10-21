@@ -13,6 +13,10 @@ health_check:
 print_status:
     enabled: true
 
+rate_limit:
+    requests_per_sec: 100
+    burst_cap: 50
+
 backends:
     - "localhost:9000"
     - "localhost:9001"
