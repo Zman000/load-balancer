@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -143,6 +144,44 @@ type RateLimiter struct {
 	clients  map[string]*ClientLimiter
 	rate     float64
 	capacity float64
+}
+
+type BackendStatus struct {
+	Address           string `json:"address"`
+	Healthy           bool   `json:"healthy"`
+	ActiveConnections int    `json:"active_connections"`
+	State             string `json:"circuit_breaker_state"`
+	Failures          int    `json:"failures"`
+}
+
+type PoolStatus struct {
+	TotalBackends int             `json:"total_backends"`
+	HealthyCount  int             `json:"total_healthy"`
+	Backends      []BackendStatus `json:"backends"`
+}
+
+func (p *BackendPool) GetStatusSnapshot() PoolStatus {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	status := PoolStatus{
+		TotalBackends: len(p.backends),
+		Backends:      make([]BackendStatus, 0, len(p.backends)),
+	}
+
+	for _, b := range p.backends {
+		if b.healthy {
+			status.HealthyCount++
+		}
+		status.Backends = append(status.Backends, BackendStatus{
+			Address:           b.address,
+			Healthy:           b.healthy,
+			ActiveConnections: b.activeConnections,
+			State:             string(b.state),
+			Failures:          b.failures,
+		})
+	}
+	return status
 }
 
 func NewRateLimiter(rate, capacity float64) *RateLimiter {
@@ -445,13 +484,6 @@ func main() {
 		panic(err)
 	}
 
-	go func() {
-		http.Handle("/metrics", promhttp.Handler())
-		fmt.Println("Metrics server listening on :9090")
-		if err := http.ListenAndServe(":2112", nil); err != nil {
-			fmt.Println("Metrics server failed:", err)
-		}
-	}()
 	maxConnections := config.Server.MaxConnections
 	limiter := NewRateLimiter(float64(config.RateDecider.RequestsPerSecond), float64(config.RateDecider.BurstCapacity))
 
@@ -476,6 +508,22 @@ func main() {
 		cbMaxFailures: config.CircuitBreaker.MaxFailures,
 		cbCooldown:    cbCooldown,
 	}
+
+	go func() {
+		http.Handle("/metrics", promhttp.Handler())
+
+		http.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+			status := pool.GetStatusSnapshot()
+			w.Header().Set("Content-Type", "application/json")
+			encoder := json.NewEncoder(w)
+			encoder.SetIndent("", " ")
+			encoder.Encode(status)
+		})
+		fmt.Println("Observability server listening on :2112 (Routes: /metrics, /status)")
+		if err := http.ListenAndServe(":2112", nil); err != nil {
+			fmt.Println("Observability server failed:", err)
+		}
+	}()
 
 	connectionTimeout, err := time.ParseDuration(config.LoadBalancer.ConnectionTimeout)
 	if err != nil {
@@ -519,10 +567,10 @@ func main() {
 
 	}
 
-	if config.PrintStatus.Enabled {
-		//function to test client connnections using loadTest file
-		go pool.PrintStatus(shutdown)
-	}
+	// if config.PrintStatus.Enabled {
+	// 	//function to test client connnections using loadTest file
+	// 	go pool.PrintStatus(shutdown)
+	// }
 
 	// Wait for the shutdown signal and then close the listener.
 	go func() {
