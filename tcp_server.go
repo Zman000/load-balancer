@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -12,6 +13,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"gopkg.in/yaml.v3"
 )
 
@@ -87,6 +91,23 @@ const (
 	StateClosed   BreakerState = "closed"
 	StateOpen     BreakerState = "open"
 	StateHalfOpen BreakerState = "half-open"
+)
+
+var (
+	requestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "lb_req_total",
+		Help: "Total number of requests routed per backend",
+	}, []string{"backend", "status"})
+
+	activeConnsGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "lb_active_connections",
+		Help: "Current number of active connections per backend",
+	}, []string{"backend"})
+
+	requestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name: "lb_req_duration_seconds",
+		Help: "Histogram of request latencies",
+	}, []string{"backend"})
 )
 
 func (p *BackendPool) RecordSuccess(backend *Backend) {
@@ -271,10 +292,13 @@ func connectClientToBackend(conn net.Conn, pool *BackendPool, timeout time.Durat
 	}
 
 	duration := time.Since(startTime).Milliseconds()
-	timestamp := time.Now().Format(time.RFC3339)
+	durationSec := float64(duration) / 1000.0
+	// timestamp := time.Now().Format(time.RFC3339)
 
 	// Output CSV line: timestamp,backend,duration_ms,bytes,status
-	fmt.Printf("%s,%s,%d,%d,%s\n", timestamp, backendInfo.address, duration, totalBytes, status)
+	// fmt.Printf("%s,%s,%d,%d,%s\n", timestamp, backendInfo.address, duration, totalBytes, status)
+	requestsTotal.WithLabelValues(backendInfo.address, status).Inc()
+	requestDuration.WithLabelValues(backendInfo.address).Observe(float64(durationSec))
 }
 
 func loadBackends(config Config) ([]Backend, error) {
@@ -368,6 +392,7 @@ func (p *BackendPool) AcquireBackend() *Backend {
 	}
 
 	backend.activeConnections += 1
+	activeConnsGauge.WithLabelValues(backend.address).Inc()
 	return backend
 }
 
@@ -375,6 +400,7 @@ func (p *BackendPool) ReleaseBackend(backend *Backend) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	backend.activeConnections--
+	activeConnsGauge.WithLabelValues(backend.address).Dec()
 }
 
 func (p *BackendPool) SetHealth(backend *Backend, health bool) {
@@ -419,6 +445,13 @@ func main() {
 		panic(err)
 	}
 
+	go func() {
+		http.Handle("/metrics", promhttp.Handler())
+		fmt.Println("Metrics server listening on :9090")
+		if err := http.ListenAndServe(":9090", nil); err != nil {
+			fmt.Println("Metrics server failed:", err)
+		}
+	}()
 	maxConnections := config.Server.MaxConnections
 	limiter := NewRateLimiter(float64(config.RateDecider.RequestsPerSecond), float64(config.RateDecider.BurstCapacity))
 
