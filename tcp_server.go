@@ -448,7 +448,7 @@ func main() {
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
 		fmt.Println("Metrics server listening on :9090")
-		if err := http.ListenAndServe(":9090", nil); err != nil {
+		if err := http.ListenAndServe(":2112", nil); err != nil {
 			fmt.Println("Metrics server failed:", err)
 		}
 	}()
