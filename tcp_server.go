@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -130,7 +131,7 @@ func (p *BackendPool) RecordFailure(backend *Backend) {
 	if backend.failures >= p.cbMaxFailures {
 		backend.state = StateOpen
 		backend.tripTime = time.Now()
-		fmt.Printf("Circuit breaker tripped OPEN for %s\n", backend.address)
+		slog.Warn("circuit breaker tripped OPEN", "backend", backend.address)
 	}
 }
 
@@ -258,13 +259,13 @@ func connectBackend(pool *BackendPool, connectionTimeout time.Duration, maxRetri
 			return backendInfo, conn
 		}
 
-		fmt.Printf("Backend %s is unreachable : %v\n", backendInfo.address, err)
+		slog.Error("backend unreachable", "backend", backendInfo.address, "error", err)
 
 		pool.ReleaseBackend(backendInfo)
 		pool.RecordFailure(backendInfo)
 
 		if attempt < maxRetries {
-			fmt.Printf("Connection failed. Retrying in %v...\n", backoff)
+			slog.Warn("connection failed. retrying in ", "backoff", backoff)
 			time.Sleep(backoff)
 			backoff *= 2
 		}
@@ -284,7 +285,8 @@ func connectClientToBackend(conn net.Conn, pool *BackendPool, timeout time.Durat
 	backendInfo, backend := connectBackend(pool, timeout, maxRetries, initialBackoff)
 
 	if backendInfo == nil {
-		fmt.Printf("%s,NONE,0,0,error_no_backend\n", time.Now().Format(time.RFC3339))
+		// fmt.Printf("%s,NONE,0,0,error_no_backend\n", time.Now().Format(time.RFC3339))
+		slog.Error("no backend available", "status", "error_no_backend")
 		return
 	}
 
@@ -397,7 +399,7 @@ func (p *BackendPool) AcquireBackend() *Backend {
 		if b.state == StateOpen {
 			if time.Since(b.tripTime) > p.cbCooldown {
 				b.state = StateHalfOpen
-				fmt.Printf("Circuit breaker HALF-OPEN for %s\n", b.address)
+				slog.Info("circuit breaker HALF-OPEN ", "backend", b.address)
 				return true
 			}
 			return false
@@ -458,12 +460,12 @@ func (p *BackendPool) PrintStatus(shutdown <-chan struct{}) {
 		case <-ticker.C:
 			p.mu.Lock()
 
-			fmt.Println("\n--- Backend Status ---")
+			// fmt.Println("\n--- Backend Status ---")
 			for _, backend := range p.backends {
 				if backend.healthy {
-					fmt.Printf("%s -> %d active connections\n", backend.address, backend.activeConnections)
+					slog.Info("backend status", "backend", backend.address, "state", "healthy", "active_connections", backend.activeConnections)
 				} else {
-					fmt.Printf("%s -> Unhealthy\n", backend.address)
+					slog.Warn("backend status", "backend", backend.address, "state", "unhealthy")
 				}
 			}
 
@@ -480,9 +482,12 @@ func main() {
 	filename := "config.yaml"
 	config, err := loadConfig(filename)
 	if err != nil {
-		fmt.Println("Error loading config:", err)
+		slog.Error("Error loading config", "error", err)
 		panic(err)
 	}
+
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
 
 	maxConnections := config.Server.MaxConnections
 	limiter := NewRateLimiter(float64(config.RateDecider.RequestsPerSecond), float64(config.RateDecider.BurstCapacity))
@@ -498,7 +503,7 @@ func main() {
 	}
 	backends, err := loadBackends(config)
 	if err != nil {
-		fmt.Println("No backend configured")
+		slog.Error("no backend configured", "error", err)
 		panic(err)
 	}
 
@@ -519,9 +524,9 @@ func main() {
 			encoder.SetIndent("", " ")
 			encoder.Encode(status)
 		})
-		fmt.Println("Observability server listening on :2112 (Routes: /metrics, /status)")
+		slog.Info("observability server listening on", "port", "2112", "Routes: /metrics, /status)")
 		if err := http.ListenAndServe(":2112", nil); err != nil {
-			fmt.Println("Observability server failed:", err)
+			slog.Warn("Observability server failed ", "error", err)
 		}
 	}()
 
@@ -538,11 +543,11 @@ func main() {
 	//load balancer's listen
 	lbListener, err := net.Listen("tcp", config.Server.ListenAddress)
 	if err != nil {
-		fmt.Println("Error on load balancer listen")
+		slog.Error("error on load balancer listen", "error", err)
 		panic(err)
 	}
 	defer lbListener.Close()
-	fmt.Println("Server listening on", config.Server.ListenAddress)
+	slog.Info("server listening on", "address", config.Server.ListenAddress)
 
 	var wg sync.WaitGroup
 	signalChannel := make(chan os.Signal, 1)
@@ -576,7 +581,7 @@ func main() {
 	go func() {
 		<-signalChannel
 
-		fmt.Println("\nShutdown requested")
+		slog.Info("shutdown requested")
 
 		close(shutdown)
 		lbListener.Close()
@@ -590,7 +595,7 @@ func main() {
 			case <-shutdown:
 				goto shutdown
 			default:
-				fmt.Println("Error on accept :", err)
+				slog.Warn("error on accept", "error", err)
 				continue
 			}
 		}
@@ -601,7 +606,7 @@ func main() {
 		}
 
 		if clientIP != "" && !limiter.Allow(clientIP) {
-			fmt.Printf("Rate limit exceeded for %s\n", clientIP)
+			slog.Warn("rate limit exceeded", "client_ip", clientIP)
 			conn.Write([]byte("HTTP/1.1 429 Too Many Requests\r\n\r\n"))
 			conn.Close()
 			continue
@@ -612,7 +617,7 @@ func main() {
 
 		default:
 			//maximum number of connection reached
-			fmt.Println("Reached connection limit")
+			slog.Warn("reached connection limit")
 			conn.Close()
 			continue
 		}
@@ -638,8 +643,8 @@ func main() {
 	}
 
 shutdown:
-	fmt.Println("Stopped accepting new connections")
-	fmt.Println("Waiting for active connections to finish...")
+	slog.Info("stopped accepting new connections")
+	slog.Info("Waiting for active connections to finish...")
 	//create context for 30 seconds
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -653,9 +658,9 @@ shutdown:
 
 	select {
 	case <-waitCh:
-		fmt.Println("All active connections finished gracefully. Server stopped.")
+		slog.Info("All active connections finished gracefully. Server stopped.")
 	case <-ctx.Done():
-		fmt.Println("Shutdown timeout reached. Force closing all connections")
+		slog.Info("Shutdown timeout reached. Force closing all connections")
 		activeConnsMu.Lock()
 		for conn := range activeConns {
 			conn.Close()
