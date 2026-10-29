@@ -39,6 +39,11 @@ var (
 		Name: "lb_active_connections",
 		Help: "Current number of active connections per backend",
 	}, []string{"backend"})
+
+	backendHealthGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "lb_backend_health",
+		Help: "Health status of backends (1 = healthy, 0 = unhealthy)",
+	}, []string{"backend"})
 )
 
 type BackendStatus struct {
@@ -140,6 +145,11 @@ func (p *BackendPool) SetHealth(backend *Backend, health bool) {
 	defer p.mu.Unlock()
 
 	backend.Healthy = health
+	if health {
+		backendHealthGauge.WithLabelValues(backend.Address).Set(1)
+	} else {
+		backendHealthGauge.WithLabelValues(backend.Address).Set(0)
+	}
 }
 
 func (p *BackendPool) RecordSuccess(backend *Backend) {

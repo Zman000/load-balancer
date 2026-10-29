@@ -55,6 +55,9 @@ func main() {
 			panic(err)
 		}
 
+		//for allowing prometheus to detect active connection, slows down overall speed
+		time.Sleep(200 * time.Millisecond)
+
 		go handleClient(conn)
 	}
 

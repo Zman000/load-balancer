@@ -77,7 +77,7 @@ func activeHealthCheck(p *pool.BackendPool, interval time.Duration, timeout time
 
 func main() {
 
-	filename := "config.yaml"
+	filename := "D:\\Programming\\LoadBalancer\\LB\\config.yaml"
 	config, err := config.Load(filename)
 	if err != nil {
 		slog.Error("Error loading config", "error", err)

@@ -1,6 +1,6 @@
 server:
     listen_address: "localhost:8080"
-    max_connections: 500
+    max_connections: 5000
 
 load_balancer:
     algorithm: "least_connections"
@@ -15,8 +15,8 @@ print_status:
     enabled: true
 
 rate_limit:
-    requests_per_sec: 100
-    burst_cap: 50
+    requests_per_sec: 1000
+    burst_cap: 500
 
 circuit_breaker:
     max_failures: 3

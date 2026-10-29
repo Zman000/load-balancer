@@ -2,12 +2,10 @@ package main
 
 import (
 	"bytes"
-	"encoding/csv"
 	"flag"
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"sort"
 	"sync"
 	"time"
@@ -64,7 +62,7 @@ func main() {
 	rampUp := flag.Duration("rampup", 10*time.Millisecond, "Delay between client starts")
 	payloadSize := flag.Int("payload", 1024, "Payload size in bytes")
 	target := flag.String("target", "localhost:8080", "Target address (host:port)")
-	csvFile := flag.String("csv", "benchmark_results.csv", "Output CSV file")
+	// csvFile := flag.String("csv", "benchmark_results.csv", "Output CSV file")
 	flag.Parse()
 
 	fmt.Printf("Starting benchmark: %d clients, %d byte payload, targeting %s\n", *clients, *payloadSize, *target)
@@ -122,27 +120,27 @@ func main() {
 	}
 
 	// Write CSV
-	file, err := os.Create(*csvFile)
-	if err != nil {
-		fmt.Printf("Failed to create CSV: %v\n", err)
-		return
-	}
-	defer file.Close()
+	// file, err := os.Create(*csvFile)
+	// if err != nil {
+	// 	fmt.Printf("Failed to create CSV: %v\n", err)
+	// 	return
+	// }
+	// defer file.Close()
 
-	writer := csv.NewWriter(file)
-	defer writer.Flush()
+	// writer := csv.NewWriter(file)
+	// defer writer.Flush()
 
-	writer.Write([]string{"client_id", "duration_ms", "status"})
-	for _, res := range allResults {
-		status := "success"
-		if !res.success {
-			status = "fail"
-		}
-		writer.Write([]string{
-			fmt.Sprintf("%d", res.id),
-			fmt.Sprintf("%d", res.duration.Milliseconds()),
-			status,
-		})
-	}
-	fmt.Printf("\nRaw results written to %s\n", *csvFile)
+	// writer.Write([]string{"client_id", "duration_ms", "status"})
+	// for _, res := range allResults {
+	// 	status := "success"
+	// 	if !res.success {
+	// 		status = "fail"
+	// 	}
+	// 	writer.Write([]string{
+	// 		fmt.Sprintf("%d", res.id),
+	// 		fmt.Sprintf("%d", res.duration.Milliseconds()),
+	// 		status,
+	// 	})
+	// }
+	// fmt.Printf("\nRaw results written to %s\n", *csvFile)
 }
