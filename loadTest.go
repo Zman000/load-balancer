@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -48,12 +49,20 @@ func client(id int, target string, payload []byte, wg *sync.WaitGroup, results c
 	}
 
 	// Read until EOF to complete the round trip
-	_, err = io.Copy(io.Discard, conn)
-	if err != nil {
+	respBuf := make([]byte, 1024)
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	n, err := conn.Read(respBuf)
+
+	if err != nil && err != io.EOF {
 		results <- reqResult{id, time.Since(start), false}
 		return
 	}
 
+	respStr := string(respBuf[:n])
+	if strings.Contains(respStr, "429") || strings.Contains(respStr, "Too Many Requests") {
+		results <- reqResult{id, time.Since(start), false}
+		return
+	}
 	results <- reqResult{id, time.Since(start), true}
 }
 

@@ -1,6 +1,6 @@
 server:
-    listen_address: "localhost:8080"
-    max_connections: 5000
+    listen_address: "0.0.0.0:8080"
+    max_connections: 500
 
 load_balancer:
     algorithm: "least_connections"
@@ -15,8 +15,8 @@ print_status:
     enabled: true
 
 rate_limit:
-    requests_per_sec: 1000
-    burst_cap: 500
+    requests_per_sec: 100
+    burst_cap: 50
 
 circuit_breaker:
     max_failures: 3
@@ -26,8 +26,9 @@ retry:
     max_retries: 3
     initial_backoff: "100ms"
 
+idle_timeout: 60s
+
 backends:
-    - "localhost:9000"
-    - "localhost:9001"
-    - "localhost:9002"
-    - "localhost:9003"
+  - "backend1:9000"
+  - "backend2:9000"
+  - "backend3:9000"

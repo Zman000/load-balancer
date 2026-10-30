@@ -1,0 +1,41 @@
+services:
+  lb:
+    build: .
+    ports:
+      - "8080:8080" # Windows localhost:8080 to the container
+      - "2112:2112" # Windows localhost:2112 to the container for Prometheus
+    depends_on:
+      - backend1
+      - backend2
+      - backend3
+
+  backend1:
+    image: golang:1.26-alpine
+    working_dir: /app
+    volumes:
+      - .:/app
+    command: go run backend.go -port 9000 -delay 1s
+
+  backend2:
+    image: golang:1.26-alpine
+    working_dir: /app
+    volumes:
+      - .:/app
+    command: go run backend.go -port 9000 -delay 2s
+
+  backend3:
+    image: golang:1.26-alpine
+    working_dir: /app
+    volumes:
+      - .:/app
+    command: go run backend.go -port 9000
+
+  loadtest:
+      image: golang:1.26-alpine
+      working_dir: /app
+      volumes:
+        - .:/app
+      profiles: ["bench"]
+      command: go run loadTest.go -target lb:8080 -clients 500 -rampup 1ms
+      depends_on:
+        - lb

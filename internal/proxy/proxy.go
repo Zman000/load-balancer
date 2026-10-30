@@ -29,6 +29,21 @@ type copyResult struct {
 	bytes int64
 }
 
+type idleConn struct {
+	net.Conn
+	timeout time.Duration
+}
+
+func (c *idleConn) Read(b []byte) (int, error) {
+	c.Conn.SetReadDeadline(time.Now().Add(c.timeout))
+	return c.Conn.Read(b)
+}
+
+func (c *idleConn) Write(b []byte) (int, error) {
+	c.Conn.SetWriteDeadline(time.Now().Add(c.timeout))
+	return c.Conn.Write(b)
+}
+
 var (
 	requestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "lb_req_total",
@@ -45,10 +60,30 @@ func NewRateLimiter(rate, capacity float64) *RateLimiter {
 	if capacity < 1 {
 		capacity = 1 // Prevent negative token initialization
 	}
-	return &RateLimiter{
+	rl := &RateLimiter{
 		clients:  make(map[string]*ClientLimiter),
 		rate:     rate,
 		capacity: capacity,
+	}
+
+	go rl.cleanupStaleClients()
+
+	return rl
+}
+
+func (rl *RateLimiter) cleanupStaleClients() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		rl.mu.Lock()
+		now := time.Now()
+		for ip, client := range rl.clients {
+			if now.Sub(client.lastUpdate) > 10*time.Minute {
+				delete(rl.clients, ip)
+			}
+		}
+		rl.mu.Unlock()
 	}
 }
 
@@ -114,7 +149,7 @@ func ConnectBackend(pool *pool.BackendPool, connectionTimeout time.Duration, max
 	return nil, nil
 }
 
-func ConnectClientToBackend(conn net.Conn, pool *pool.BackendPool, timeout time.Duration, maxRetries int, initialBackoff time.Duration) {
+func ConnectClientToBackend(conn net.Conn, pool *pool.BackendPool, timeout time.Duration, maxRetries int, initialBackoff time.Duration, idleTimeout time.Duration) {
 	// Record the timestamp at accept/start
 	startTime := time.Now()
 
@@ -133,17 +168,15 @@ func ConnectClientToBackend(conn net.Conn, pool *pool.BackendPool, timeout time.
 	defer pool.ReleaseBackend(backendInfo)
 	defer backend.Close()
 
-	// Add deadline to this connection (5 min)
-	deadline := time.Now().Add(5 * time.Minute)
-	conn.SetDeadline(deadline)
-	backend.SetDeadline(deadline)
+	activeClient := &idleConn{Conn: conn, timeout: idleTimeout}
+	activeBackend := &idleConn{Conn: backend, timeout: idleTimeout}
 
 	//use struct channel to get both error and byte count
 	res := make(chan copyResult, 2)
 
 	go func() {
-		n, err := io.Copy(conn, backend)
-		if tcp, ok := conn.(*net.TCPConn); ok {
+		n, err := io.Copy(activeClient, activeBackend)
+		if tcp, ok := activeClient.Conn.(*net.TCPConn); ok {
 			if closeErr := tcp.CloseWrite(); err == nil {
 				err = closeErr
 			}
@@ -152,8 +185,8 @@ func ConnectClientToBackend(conn net.Conn, pool *pool.BackendPool, timeout time.
 	}()
 
 	go func() {
-		n, err := io.Copy(backend, conn)
-		if tcp, ok := backend.(*net.TCPConn); ok {
+		n, err := io.Copy(activeBackend, activeClient)
+		if tcp, ok := activeBackend.Conn.(*net.TCPConn); ok {
 			if closeErr := tcp.CloseWrite(); err == nil {
 				err = closeErr
 			}

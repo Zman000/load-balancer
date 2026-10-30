@@ -3,41 +3,36 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io"
+	"math/rand"
 	"net"
 	"time"
 )
 
 var delay time.Duration
 
-func handleClient(conn net.Conn) {
+func handleClient(conn net.Conn, baseDelay, jitter time.Duration) {
 	defer conn.Close()
 
-	n, err := io.Copy(io.Discard, conn)
-	if err != nil {
-		fmt.Println("Error on reading from client")
-		return
-	}
-	// Apply artificial latency if configured
-	if delay > 0 {
-		time.Sleep(delay)
+	// Calculate realistic distributed latency
+	actualDelay := baseDelay
+	if jitter > 0 {
+		randomJitter := time.Duration(rand.Int63n(int64(jitter)))
+		actualDelay += randomJitter
 	}
 
-	confirmation := []byte(fmt.Sprintf("Recieved %d bytes", n))
-	_, err = conn.Write(confirmation)
-	if err != nil {
-		fmt.Println("Error on write:", err)
-		return
-	}
-	// fmt.Println(confirmation)
+	// The delay happens here, completely isolated to this specific client
+	time.Sleep(actualDelay)
+
+	// Simulate successful response
+	conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\nBackend Response"))
 }
 
 func main() {
-	port := flag.String("port", "8081", "Port to listen on")
-	delayFlag := flag.Duration("delay", 0, "Artificial delay (e.g., 500ms)")
+	port := flag.String("port", "9000", "Port to listen on")
+	delay := flag.Duration("delay", 0, "Artificial delay (e.g., 500ms)")
+	jitter := flag.Duration("jitter", 50*time.Millisecond, "Maximum random jitter to add")
 	flag.Parse()
 
-	delay = *delayFlag
 	listener, err := net.Listen("tcp", ":"+*port)
 	if err != nil {
 		fmt.Println("backend Error on listen")
@@ -46,7 +41,7 @@ func main() {
 
 	defer listener.Close()
 
-	fmt.Printf("Backend listening on port %s with delay %v\n", *port, *delayFlag)
+	fmt.Printf("Backend listening on port %s with delay %v (jitter: %v)\n", *port, *delay, *jitter)
 
 	for {
 		conn, err := listener.Accept()
@@ -56,9 +51,9 @@ func main() {
 		}
 
 		//for allowing prometheus to detect active connection, slows down overall speed
-		time.Sleep(200 * time.Millisecond)
+		// time.Sleep(200 * time.Millisecond)
 
-		go handleClient(conn)
+		go handleClient(conn, *delay, *jitter)
 	}
 
 }

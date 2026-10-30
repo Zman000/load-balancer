@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -28,6 +30,11 @@ type copyResult struct {
 	err   error
 	bytes int64
 }
+
+var rateLimitedTotal = promauto.NewCounter(prometheus.CounterOpts{
+	Name: "lb_rate_limited_total",
+	Help: "Total number of requests rejected by the rate limiter",
+})
 
 func loadBackends(config config.Config) ([]pool.Backend, error) {
 
@@ -57,19 +64,23 @@ func activeHealthCheck(p *pool.BackendPool, interval time.Duration, timeout time
 	for {
 		select {
 		case <-ticker.C:
+			var wg sync.WaitGroup
 			for i := range p.Backends {
-				backend := &p.Backends[i]
-				conn, err := net.DialTimeout("tcp", backend.Address, timeout)
-				healthy := err == nil
+				wg.Add(1)
+				go func(backend *pool.Backend) {
+					defer wg.Done()
+					conn, err := net.DialTimeout("tcp", backend.Address, timeout)
+					healthy := err == nil
 
-				if conn != nil {
-					conn.Close()
-				}
+					if conn != nil {
+						conn.Close()
+					}
 
-				p.SetHealth(backend, healthy)
+					p.SetHealth(backend, healthy)
+				}(&p.Backends[i])
 			}
+			wg.Wait()
 		case <-shutdown:
-
 			return
 		}
 	}
@@ -77,7 +88,7 @@ func activeHealthCheck(p *pool.BackendPool, interval time.Duration, timeout time
 
 func main() {
 
-	filename := "D:\\Programming\\LoadBalancer\\LB\\config.yaml"
+	filename := "config.yaml"
 	config, err := config.Load(filename)
 	if err != nil {
 		slog.Error("Error loading config", "error", err)
@@ -93,6 +104,12 @@ func main() {
 	cbCooldown, err := time.ParseDuration(config.CircuitBreaker.Cooldown)
 	if err != nil {
 		panic(err)
+	}
+
+	idleTimeout, err := time.ParseDuration(config.IdleTimeout)
+	if err != nil {
+		idleTimeout = 5 * time.Minute
+		slog.Warn("failed to parse idle timeout duration, using default", "default", idleTimeout)
 	}
 
 	intitialBackoff, err := time.ParseDuration(config.Retry.InitialBackoff)
@@ -205,6 +222,7 @@ func main() {
 
 		if clientIP != "" && !limiter.Allow(clientIP) {
 			slog.Warn("rate limit exceeded", "client_ip", clientIP)
+			rateLimitedTotal.Inc()
 			conn.Write([]byte("HTTP/1.1 429 Too Many Requests\r\n\r\n"))
 			conn.Close()
 			continue
@@ -236,7 +254,7 @@ func main() {
 				delete(activeConns, conn)
 				activeConnsMu.Unlock()
 			}()
-			proxy.ConnectClientToBackend(conn, &lbPool, connectionTimeout, config.Retry.MaxRetries, intitialBackoff)
+			proxy.ConnectClientToBackend(conn, &lbPool, connectionTimeout, config.Retry.MaxRetries, intitialBackoff, idleTimeout)
 		}()
 	}
 

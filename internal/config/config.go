@@ -43,6 +43,7 @@ type Config struct {
 	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
 	Retry          RetryConfig          `yaml:"retry"`
 	Backends       []string             `yaml:"backends"`
+	IdleTimeout    string               `yaml:"idle_timeout"`
 }
 
 func Load(filename string) (Config, error) {
