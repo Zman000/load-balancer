@@ -14,21 +14,21 @@ services:
     working_dir: /app
     volumes:
       - .:/app
-    command: go run cmd/backend.go -port 9000 -delay 1s
+    command: go run cmd/backend/backend.go -port 9000 -delay 1s
 
   backend2:
     image: golang:1.26-alpine
     working_dir: /app
     volumes:
       - .:/app
-    command: go run cmd/backend.go -port 9000 -delay 2s
+    command: go run cmd/backend/backend.go -port 9000 -delay 2s
 
   backend3:
     image: golang:1.26-alpine
     working_dir: /app
     volumes:
       - .:/app
-    command: go run cmd/backend.go -port 9000
+    command: go run cmd/backend/backend.go -port 9000
 
   loadtest:
       image: golang:1.26-alpine

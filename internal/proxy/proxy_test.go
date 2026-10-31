@@ -1,11 +1,12 @@
 package proxy
 
 import (
-	"LB/internal/pool"
 	"context"
 	"net"
 	"testing"
 	"time"
+
+	"github.com/ayush/loadbalancer/internal/pool"
 )
 
 func TestCircuitBreaker_Integration(t *testing.T) {
