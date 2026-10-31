@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 
 	"gopkg.in/yaml.v3"
@@ -19,9 +20,6 @@ type HealthCheck struct {
 	Timeout  string `yaml:"timeout"`
 	Interval string `yaml:"interval"`
 }
-type PrintStatus struct {
-	Enabled bool `yaml:"enabled"`
-}
 type RateDecider struct {
 	RequestsPerSecond int `yaml:"requests_per_sec"`
 	BurstCapacity     int `yaml:"burst_cap"`
@@ -38,7 +36,6 @@ type Config struct {
 	Server         Server               `yaml:"server"`
 	LoadBalancer   LoadBalancer         `yaml:"load_balancer"`
 	HealthCheck    HealthCheck          `yaml:"health_check"`
-	PrintStatus    PrintStatus          `yaml:"print_status"`
 	RateDecider    RateDecider          `yaml:"rate_limit"`
 	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
 	Retry          RetryConfig          `yaml:"retry"`
@@ -60,4 +57,20 @@ func Load(filename string) (Config, error) {
 	}
 
 	return config, nil
+}
+
+func (c *Config) Validate() error {
+	if c.LoadBalancer.Algorithm != "round_robin" && c.LoadBalancer.Algorithm != "least_connections" {
+		return fmt.Errorf("invalid algorithm %q: must be 'round_robin' or 'least_connections'", c.LoadBalancer.Algorithm)
+	}
+	if c.Server.ListenAddress == "" {
+		return fmt.Errorf("listen address cannot be empty")
+	}
+	if c.Server.MaxConnections <= 0 {
+		return fmt.Errorf("server max_connections must be greater than 0")
+	}
+	if len(c.Backends) == 0 {
+		return fmt.Errorf("no backends available")
+	}
+	return nil
 }

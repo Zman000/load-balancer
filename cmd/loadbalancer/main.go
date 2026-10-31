@@ -1,9 +1,6 @@
 package main
 
 import (
-	"LB/internal/config"
-	"LB/internal/pool"
-	"LB/internal/proxy"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -17,24 +14,24 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ayush/loadbalancer/internal/config"
+	"github.com/ayush/loadbalancer/internal/pool"
+	"github.com/ayush/loadbalancer/internal/proxy"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-type ClientHandler struct {
-	mu sync.Mutex
-}
-
-type copyResult struct {
-	err   error
-	bytes int64
-}
-
-var rateLimitedTotal = promauto.NewCounter(prometheus.CounterOpts{
-	Name: "lb_rate_limited_total",
-	Help: "Total number of requests rejected by the rate limiter",
-})
+var (
+	rateLimitedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "lb_rate_limited_total",
+		Help: "Total number of requests rejected by the rate limiter",
+	})
+	connRejectedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "lb_conn_rejected_total",
+		Help: "Total number of connections rejected",
+	}, []string{"reason"})
+)
 
 func loadBackends(config config.Config) ([]pool.Backend, error) {
 
@@ -92,7 +89,12 @@ func main() {
 	config, err := config.Load(filename)
 	if err != nil {
 		slog.Error("Error loading config", "error", err)
-		panic(err)
+		os.Exit(1)
+	}
+
+	if err := config.Validate(); err != nil {
+		slog.Error("Invalid configuration", "error", err)
+		os.Exit(1)
 	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -103,7 +105,7 @@ func main() {
 
 	cbCooldown, err := time.ParseDuration(config.CircuitBreaker.Cooldown)
 	if err != nil {
-		panic(err)
+		os.Exit(1)
 	}
 
 	idleTimeout, err := time.ParseDuration(config.IdleTimeout)
@@ -114,12 +116,12 @@ func main() {
 
 	intitialBackoff, err := time.ParseDuration(config.Retry.InitialBackoff)
 	if err != nil {
-		panic(err)
+		os.Exit(1)
 	}
 	backends, err := loadBackends(config)
 	if err != nil {
 		slog.Error("no backend configured", "error", err)
-		panic(err)
+		os.Exit(1)
 	}
 
 	lbPool := pool.BackendPool{ // Added pool prefix and renamed variable to avoid package clash
@@ -139,7 +141,7 @@ func main() {
 			encoder.SetIndent("", " ")
 			encoder.Encode(status)
 		})
-		slog.Info("observability server listening on", "port", "2112", "Routes: /metrics, /status)")
+		slog.Info("observability server listening on", "port", "2112", "routes", "/metrics, /status")
 		if err := http.ListenAndServe(":2112", nil); err != nil {
 			slog.Warn("Observability server failed ", "error", err)
 		}
@@ -147,7 +149,7 @@ func main() {
 
 	connectionTimeout, err := time.ParseDuration(config.LoadBalancer.ConnectionTimeout)
 	if err != nil {
-		panic(err)
+		os.Exit(1)
 	}
 
 	connectionSemaphore := make(chan struct{}, maxConnections)
@@ -159,7 +161,7 @@ func main() {
 	lbListener, err := net.Listen("tcp", config.Server.ListenAddress)
 	if err != nil {
 		slog.Error("error on load balancer listen", "error", err)
-		panic(err)
+		os.Exit(1)
 	}
 	defer lbListener.Close()
 	slog.Info("server listening on", "address", config.Server.ListenAddress)
@@ -169,18 +171,19 @@ func main() {
 	signal.Notify(signalChannel, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(signalChannel)
 
+	ctx, cancel := context.WithCancel(context.Background())
 	shutdown := make(chan struct{})
 
 	//active health checks at intervals
 	if config.HealthCheck.Enabled {
 		interval, err := time.ParseDuration(config.HealthCheck.Interval)
 		if err != nil {
-			panic(err)
+			os.Exit(1)
 		}
 
 		timeout, err := time.ParseDuration(config.HealthCheck.Timeout)
 		if err != nil {
-			panic(err)
+			os.Exit(1)
 		}
 
 		go activeHealthCheck(&lbPool, interval, timeout, shutdown)
@@ -197,7 +200,7 @@ func main() {
 		<-signalChannel
 
 		slog.Info("shutdown requested")
-
+		cancel()
 		close(shutdown)
 		lbListener.Close()
 	}()
@@ -221,10 +224,16 @@ func main() {
 		}
 
 		if clientIP != "" && !limiter.Allow(clientIP) {
-			slog.Warn("rate limit exceeded", "client_ip", clientIP)
 			rateLimitedTotal.Inc()
-			conn.Write([]byte("HTTP/1.1 429 Too Many Requests\r\n\r\n"))
-			conn.Close()
+			// Instantly hand off the logging and rejection to a goroutine
+			go func(c net.Conn, ip string) {
+				slog.Warn("rate limit exceeded", "client_ip", clientIP)
+				c.Write([]byte("HTTP/1.1 429 Too Many Requests\r\n\r\n"))
+				if tcp, ok := c.(*net.TCPConn); ok {
+					tcp.CloseWrite()
+				}
+				c.Close()
+			}(conn, clientIP)
 			continue
 		}
 
@@ -232,9 +241,12 @@ func main() {
 		case connectionSemaphore <- struct{}{}:
 
 		default:
-			//maximum number of connection reached
-			slog.Warn("reached connection limit")
-			conn.Close()
+			connRejectedTotal.WithLabelValues("connection_limit").Inc()
+			// Instantly hand off the semaphore drop
+			go func(c net.Conn) {
+				slog.Warn("reached connection limit")
+				c.Close()
+			}(conn)
 			continue
 		}
 
@@ -254,7 +266,7 @@ func main() {
 				delete(activeConns, conn)
 				activeConnsMu.Unlock()
 			}()
-			proxy.ConnectClientToBackend(conn, &lbPool, connectionTimeout, config.Retry.MaxRetries, intitialBackoff, idleTimeout)
+			proxy.ConnectClientToBackend(ctx, conn, &lbPool, connectionTimeout, config.Retry.MaxRetries, intitialBackoff, idleTimeout)
 		}()
 	}
 
@@ -262,7 +274,7 @@ shutdown:
 	slog.Info("stopped accepting new connections")
 	slog.Info("Waiting for active connections to finish...")
 	//create context for 30 seconds
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	//channel to signal when all goroutines are finished (on their own)

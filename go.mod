@@ -1,4 +1,4 @@
-module LB
+module github.com/ayush/loadbalancer
 
 go 1.26.4
 

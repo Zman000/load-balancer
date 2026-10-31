@@ -13,6 +13,10 @@ var delay time.Duration
 func handleClient(conn net.Conn, baseDelay, jitter time.Duration) {
 	defer conn.Close()
 
+	// Drain the TCP receive buffer to prevent an OS RST upon closing
+	buf := make([]byte, 2048)
+	conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	conn.Read(buf)
 	// Calculate realistic distributed latency
 	actualDelay := baseDelay
 	if jitter > 0 {

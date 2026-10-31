@@ -53,7 +53,7 @@ func client(id int, target string, payload []byte, wg *sync.WaitGroup, results c
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	n, err := conn.Read(respBuf)
 
-	if err != nil && err != io.EOF {
+	if n == 0 || (err != nil && err != io.EOF) {
 		results <- reqResult{id, time.Since(start), false}
 		return
 	}

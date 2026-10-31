@@ -16,6 +16,7 @@ type Backend struct {
 	Failures          int
 	State             BreakerState
 	TripTime          time.Time
+	ProbeStart        time.Time
 }
 
 type BackendPool struct {
@@ -43,6 +44,11 @@ var (
 	backendHealthGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "lb_backend_health",
 		Help: "Health status of backends (1 = healthy, 0 = unhealthy)",
+	}, []string{"backend"})
+
+	cbStateGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "lb_cb_state",
+		Help: "Circuit breaker state (0 = closed, 1 = half open, 2 = open)",
 	}, []string{"backend"})
 )
 
@@ -88,17 +94,25 @@ func (p *BackendPool) AcquireBackend() *Backend {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	now := time.Now()
 	isEligible := func(b *Backend) bool {
 		if !b.Healthy {
 			return false
 		}
 		if b.State == StateOpen {
-			if time.Since(b.TripTime) > p.CbCooldown {
-				b.State = StateHalfOpen
-				slog.Info("circuit breaker HALF-OPEN ", "backend", b.Address)
-				return true
-			}
-			return false
+			// if time.Since(b.TripTime) > p.CbCooldown {
+			// 	b.State = StateHalfOpen
+			// 	cbStateGauge.WithLabelValues(b.Address).Set(1)
+			// 	slog.Info("circuit breaker HALF-OPEN ", "backend", b.Address)
+			// 	return true
+			// }
+			// return false
+			return now.Sub(b.TripTime) >= p.CbCooldown
+		}
+		if b.State == StateHalfOpen {
+			// A probe is already in flight. Deny all other requests until the probe finishes.
+			// return false
+			return now.Sub(b.ProbeStart) >= p.CbCooldown // Watchdog: recover if a probe gets lost
 		}
 		return true
 	}
@@ -128,6 +142,12 @@ func (p *BackendPool) AcquireBackend() *Backend {
 		return nil
 	}
 
+	if backend.State != StateClosed {
+		backend.State = StateHalfOpen
+		backend.ProbeStart = now
+		cbStateGauge.WithLabelValues(backend.Address).Set(1)
+		slog.Info("circuit breaker HALF-OPEN, probe dispatched", "backend", backend.Address)
+	}
 	backend.ActiveConnections += 1
 	activeConnsGauge.WithLabelValues(backend.Address).Inc()
 	return backend
@@ -157,6 +177,7 @@ func (p *BackendPool) RecordSuccess(backend *Backend) {
 	defer p.mu.Unlock()
 	backend.Failures = 0
 	backend.State = StateClosed
+	cbStateGauge.WithLabelValues(backend.Address).Set(0)
 }
 
 func (p *BackendPool) RecordFailure(backend *Backend) {
@@ -172,5 +193,7 @@ func (p *BackendPool) RecordFailure(backend *Backend) {
 		backend.State = StateOpen
 		backend.TripTime = time.Now()
 		slog.Warn("circuit breaker tripped OPEN", "backend", backend.Address)
+		cbStateGauge.WithLabelValues(backend.Address).Set(2)
 	}
+
 }

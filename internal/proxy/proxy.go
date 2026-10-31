@@ -1,13 +1,15 @@
 package proxy
 
 import (
-	"LB/internal/pool"
+	"context"
 	"io"
 	"log/slog"
+	"math/rand"
 	"net"
 	"sync"
 	"time"
 
+	"github.com/ayush/loadbalancer/internal/pool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -53,6 +55,11 @@ var (
 	requestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name: "lb_req_duration_seconds",
 		Help: "Histogram of request latencies",
+	}, []string{"backend"})
+
+	retriesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "lb_retries_total",
+		Help: "Total number of connection retries to backends",
 	}, []string{"backend"})
 )
 
@@ -118,7 +125,7 @@ func (rl *RateLimiter) Allow(ip string) bool {
 	return false
 }
 
-func ConnectBackend(pool *pool.BackendPool, connectionTimeout time.Duration, maxRetries int, initialBackoff time.Duration) (*pool.Backend, net.Conn) {
+func ConnectBackend(ctx context.Context, pool *pool.BackendPool, connectionTimeout time.Duration, maxRetries int, initialBackoff time.Duration) (*pool.Backend, net.Conn) {
 	backoff := initialBackoff
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
@@ -128,9 +135,14 @@ func ConnectBackend(pool *pool.BackendPool, connectionTimeout time.Duration, max
 			return nil, nil
 		}
 
+		if attempt > 0 {
+			retriesTotal.WithLabelValues(backendInfo.Address).Inc()
+		}
+
 		conn, err := net.DialTimeout("tcp", backendInfo.Address, connectionTimeout)
 		if err == nil {
-			pool.RecordSuccess(backendInfo)
+			//do not put record success here, only claim success after complete transfer
+			// pool.RecordSuccess(backendInfo)
 			return backendInfo, conn
 		}
 
@@ -140,16 +152,27 @@ func ConnectBackend(pool *pool.BackendPool, connectionTimeout time.Duration, max
 		pool.RecordFailure(backendInfo)
 
 		if attempt < maxRetries {
-			slog.Warn("connection failed. retrying in ", "backoff", backoff)
-			time.Sleep(backoff)
-			backoff *= 2
+			// Add random jitter (some amount ~ 20 percent) to prevent retry storms
+			jitter := time.Duration(rand.Int63n(int64(backoff) / 5))
+			sleepTime := backoff + jitter
+
+			slog.Warn("connection failed. retrying in ", "backoff", sleepTime)
+
+			// Wait for backoff OR server shutdown
+			select {
+			case <-time.After(sleepTime):
+				backoff *= 2
+			case <-ctx.Done():
+				slog.Info("aborting retry due to server shutdown")
+				return nil, nil
+			}
 		}
 		// pool.SetHealth(backendInfo, false)
 	}
 	return nil, nil
 }
 
-func ConnectClientToBackend(conn net.Conn, pool *pool.BackendPool, timeout time.Duration, maxRetries int, initialBackoff time.Duration, idleTimeout time.Duration) {
+func ConnectClientToBackend(ctx context.Context, conn net.Conn, pool *pool.BackendPool, timeout time.Duration, maxRetries int, initialBackoff time.Duration, idleTimeout time.Duration) {
 	// Record the timestamp at accept/start
 	startTime := time.Now()
 
@@ -157,10 +180,15 @@ func ConnectClientToBackend(conn net.Conn, pool *pool.BackendPool, timeout time.
 
 	// fmt.Println("Forwarding to:", backendInfo.Address)
 
-	backendInfo, backend := ConnectBackend(pool, timeout, maxRetries, initialBackoff)
+	backendInfo, backend := ConnectBackend(ctx, pool, timeout, maxRetries, initialBackoff)
 
 	if backendInfo == nil {
 		// fmt.Printf("%s,NONE,0,0,error_no_backend\n", time.Now().Format(time.RFC3339))
+		conn.Write([]byte("HTTP/1.1 503 Service Unavailable\r\n\r\n"))
+		if tcp, ok := conn.(*net.TCPConn); ok {
+			tcp.CloseWrite()
+		}
+		io.Copy(io.Discard, conn) // Drain
 		slog.Error("no backend available", "status", "error_no_backend")
 		return
 	}
@@ -203,6 +231,11 @@ func ConnectClientToBackend(conn net.Conn, pool *pool.BackendPool, timeout time.
 		if result.err != nil && result.err != io.EOF {
 			status = "error"
 		}
+	}
+	if status == "success" {
+		pool.RecordSuccess(backendInfo) // The probe or request fully completed!
+	} else {
+		pool.RecordFailure(backendInfo) // Catch mid-stream timeouts and resets
 	}
 
 	duration := time.Since(startTime).Milliseconds()

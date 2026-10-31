@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"LB/internal/pool"
+	"context"
 	"net"
 	"testing"
 	"time"
@@ -32,10 +33,10 @@ func TestCircuitBreaker_Integration(t *testing.T) {
 		CbMaxFailures: 2,
 		CbCooldown:    5 * time.Second,
 	}
-
+	ctx, _ := context.WithCancel(context.Background())
 	server2.Close()
 	for i := 0; i < 5; i++ {
-		_, conn := ConnectBackend(lbPool, 100*time.Millisecond, 0, 0)
+		_, conn := ConnectBackend(ctx, lbPool, 100*time.Millisecond, 0, 0)
 		if conn != nil {
 			conn.Close()
 		}
