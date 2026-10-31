@@ -14,21 +14,21 @@ services:
     working_dir: /app
     volumes:
       - .:/app
-    command: go run backend.go -port 9000 -delay 1s
+    command: go run cmd/backend.go -port 9000 -delay 1s
 
   backend2:
     image: golang:1.26-alpine
     working_dir: /app
     volumes:
       - .:/app
-    command: go run backend.go -port 9000 -delay 2s
+    command: go run cmd/backend.go -port 9000 -delay 2s
 
   backend3:
     image: golang:1.26-alpine
     working_dir: /app
     volumes:
       - .:/app
-    command: go run backend.go -port 9000
+    command: go run cmd/backend.go -port 9000
 
   loadtest:
       image: golang:1.26-alpine
@@ -36,7 +36,7 @@ services:
       volumes:
         - .:/app
       profiles: ["bench"]
-      command: go run loadTest.go -target lb:8080 -clients 500 -rampup 1ms
+      command: go run cmd/loadtest/loadTest.go -target lb:8080 -clients 500 -rampup 1ms
       depends_on:
         - lb
   prometheus:
