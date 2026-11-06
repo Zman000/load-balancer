@@ -175,9 +175,32 @@ func (p *BackendPool) SetHealth(backend *Backend, health bool) {
 func (p *BackendPool) RecordSuccess(backend *Backend) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	// Ignore stragglers: an old in-flight connection finishing successfully
+	// must not re-close a breaker that has already tripped Open again.
+	if backend.State == StateOpen {
+		return
+	}
+
 	backend.Failures = 0
 	backend.State = StateClosed
 	cbStateGauge.WithLabelValues(backend.Address).Set(0)
+}
+
+// ResolveHalfOpen resets a half-open breaker back to closed when an active health check passes.
+// This prevents long-lived TCP connections from holding the breaker in half-open state indefinitely.
+func (p *BackendPool) ResolveHalfOpen(backend *Backend) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if backend.State != StateHalfOpen {
+		return
+	}
+
+	backend.Failures = 0
+	backend.State = StateClosed
+	cbStateGauge.WithLabelValues(backend.Address).Set(0)
+	slog.Info("circuit breaker CLOSED via active health check", "backend", backend.Address)
 }
 
 func (p *BackendPool) RecordFailure(backend *Backend) {

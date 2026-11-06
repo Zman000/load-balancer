@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -27,10 +28,6 @@ var (
 		Name: "lb_rate_limited_total",
 		Help: "Total number of requests rejected by the rate limiter",
 	})
-	connRejectedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "lb_conn_rejected_total",
-		Help: "Total number of connections rejected",
-	}, []string{"reason"})
 )
 
 func loadBackends(config config.Config) ([]pool.Backend, error) {
@@ -74,6 +71,9 @@ func activeHealthCheck(p *pool.BackendPool, interval time.Duration, timeout time
 					}
 
 					p.SetHealth(backend, healthy)
+					if healthy {
+						p.ResolveHalfOpen(backend)
+					}
 				}(&p.Backends[i])
 			}
 			wg.Wait()
@@ -103,21 +103,11 @@ func main() {
 	maxConnections := config.Server.MaxConnections
 	limiter := proxy.NewRateLimiter(float64(config.RateDecider.RequestsPerSecond), float64(config.RateDecider.BurstCapacity))
 
-	cbCooldown, err := time.ParseDuration(config.CircuitBreaker.Cooldown)
-	if err != nil {
-		os.Exit(1)
-	}
+	// Durations are now parsed and validated inside config.Validate().
+	cbCooldown := config.CircuitBreaker.ParsedCooldown
+	idleTimeout := config.ParsedIdleTimeout
+	initialBackoff := config.Retry.ParsedBackoff
 
-	idleTimeout, err := time.ParseDuration(config.IdleTimeout)
-	if err != nil {
-		idleTimeout = 5 * time.Minute
-		slog.Warn("failed to parse idle timeout duration, using default", "default", idleTimeout)
-	}
-
-	intitialBackoff, err := time.ParseDuration(config.Retry.InitialBackoff)
-	if err != nil {
-		os.Exit(1)
-	}
 	backends, err := loadBackends(config)
 	if err != nil {
 		slog.Error("no backend configured", "error", err)
@@ -147,10 +137,7 @@ func main() {
 		}
 	}()
 
-	connectionTimeout, err := time.ParseDuration(config.LoadBalancer.ConnectionTimeout)
-	if err != nil {
-		os.Exit(1)
-	}
+	connectionTimeout := config.LoadBalancer.ParsedConnTimeout
 
 	connectionSemaphore := make(chan struct{}, maxConnections)
 
@@ -176,18 +163,7 @@ func main() {
 
 	//active health checks at intervals
 	if config.HealthCheck.Enabled {
-		interval, err := time.ParseDuration(config.HealthCheck.Interval)
-		if err != nil {
-			os.Exit(1)
-		}
-
-		timeout, err := time.ParseDuration(config.HealthCheck.Timeout)
-		if err != nil {
-			os.Exit(1)
-		}
-
-		go activeHealthCheck(&lbPool, interval, timeout, shutdown)
-
+		go activeHealthCheck(&lbPool, config.HealthCheck.ParsedInterval, config.HealthCheck.ParsedTimeout, shutdown)
 	}
 
 	// if config.PrintStatus.Enabled {
@@ -225,6 +201,7 @@ func main() {
 
 		if clientIP != "" && !limiter.Allow(clientIP) {
 			rateLimitedTotal.Inc()
+			proxy.ConnRejectedTotal.WithLabelValues("rate_limited").Inc()
 			// Instantly hand off the logging and rejection to a goroutine
 			go func(c net.Conn, ip string) {
 				slog.Warn("rate limit exceeded", "client_ip", clientIP)
@@ -232,6 +209,8 @@ func main() {
 				if tcp, ok := c.(*net.TCPConn); ok {
 					tcp.CloseWrite()
 				}
+				c.SetReadDeadline(time.Now().Add(2 * time.Second))
+				io.Copy(io.Discard, c)
 				c.Close()
 			}(conn, clientIP)
 			continue
@@ -241,7 +220,7 @@ func main() {
 		case connectionSemaphore <- struct{}{}:
 
 		default:
-			connRejectedTotal.WithLabelValues("connection_limit").Inc()
+			proxy.ConnRejectedTotal.WithLabelValues("connection_limit").Inc()
 			// Instantly hand off the semaphore drop
 			go func(c net.Conn) {
 				slog.Warn("reached connection limit")
@@ -266,7 +245,7 @@ func main() {
 				delete(activeConns, conn)
 				activeConnsMu.Unlock()
 			}()
-			proxy.ConnectClientToBackend(ctx, conn, &lbPool, connectionTimeout, config.Retry.MaxRetries, intitialBackoff, idleTimeout)
+			proxy.ConnectClientToBackend(ctx, conn, &lbPool, connectionTimeout, config.Retry.MaxRetries, initialBackoff, idleTimeout)
 		}()
 	}
 

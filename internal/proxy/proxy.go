@@ -46,6 +46,41 @@ func (c *idleConn) Write(b []byte) (int, error) {
 	return c.Conn.Write(b)
 }
 
+// trackedConn wraps a connection and records whether its own Read/Write
+// operations failed.  Used on the backend leg so we can distinguish
+// "backend broke" from "client broke" when deciding circuit-breaker fate.
+type trackedConn struct {
+	net.Conn
+	mu     sync.Mutex
+	failed bool
+}
+
+func (t *trackedConn) Read(b []byte) (int, error) {
+	n, err := t.Conn.Read(b)
+	if err != nil && err != io.EOF {
+		t.mu.Lock()
+		t.failed = true
+		t.mu.Unlock()
+	}
+	return n, err
+}
+
+func (t *trackedConn) Write(b []byte) (int, error) {
+	n, err := t.Conn.Write(b)
+	if err != nil {
+		t.mu.Lock()
+		t.failed = true
+		t.mu.Unlock()
+	}
+	return n, err
+}
+
+func (t *trackedConn) Failed() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.failed
+}
+
 var (
 	requestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "lb_req_total",
@@ -61,6 +96,14 @@ var (
 		Name: "lb_retries_total",
 		Help: "Total number of connection retries to backends",
 	}, []string{"backend"})
+
+	// ConnRejectedTotal is exported so main.go can increment it for
+	// rate-limit and connection-limit rejections that happen in the
+	// accept loop, while proxy.go increments it for no-backend (503).
+	ConnRejectedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "lb_conn_rejected_total",
+		Help: "Total number of connections rejected",
+	}, []string{"reason"})
 )
 
 func NewRateLimiter(rate, capacity float64) *RateLimiter {
@@ -178,17 +221,17 @@ func ConnectClientToBackend(ctx context.Context, conn net.Conn, pool *pool.Backe
 
 	defer conn.Close()
 
-	// fmt.Println("Forwarding to:", backendInfo.Address)
-
 	backendInfo, backend := ConnectBackend(ctx, pool, timeout, maxRetries, initialBackoff)
 
 	if backendInfo == nil {
-		// fmt.Printf("%s,NONE,0,0,error_no_backend\n", time.Now().Format(time.RFC3339))
+		ConnRejectedTotal.WithLabelValues("no_backend").Inc()
 		conn.Write([]byte("HTTP/1.1 503 Service Unavailable\r\n\r\n"))
 		if tcp, ok := conn.(*net.TCPConn); ok {
 			tcp.CloseWrite()
 		}
-		io.Copy(io.Discard, conn) // Drain
+		// B.3: Drain with a deadline so silent clients don't hold goroutines forever.
+		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		io.Copy(io.Discard, conn)
 		slog.Error("no backend available", "status", "error_no_backend")
 		return
 	}
@@ -196,12 +239,17 @@ func ConnectClientToBackend(ctx context.Context, conn net.Conn, pool *pool.Backe
 	defer pool.ReleaseBackend(backendInfo)
 	defer backend.Close()
 
+	// B.1: Wrap the backend connection in a trackedConn so we can tell
+	// whether Read/Write errors came from the backend leg specifically.
+	tracker := &trackedConn{Conn: backend}
+
 	activeClient := &idleConn{Conn: conn, timeout: idleTimeout}
-	activeBackend := &idleConn{Conn: backend, timeout: idleTimeout}
+	activeBackend := &idleConn{Conn: tracker, timeout: idleTimeout}
 
 	//use struct channel to get both error and byte count
 	res := make(chan copyResult, 2)
 
+	// backend → client
 	go func() {
 		n, err := io.Copy(activeClient, activeBackend)
 		if tcp, ok := activeClient.Conn.(*net.TCPConn); ok {
@@ -212,9 +260,10 @@ func ConnectClientToBackend(ctx context.Context, conn net.Conn, pool *pool.Backe
 		res <- copyResult{err: err, bytes: n}
 	}()
 
+	// client → backend
 	go func() {
 		n, err := io.Copy(activeBackend, activeClient)
-		if tcp, ok := activeBackend.Conn.(*net.TCPConn); ok {
+		if tcp, ok := tracker.Conn.(*net.TCPConn); ok {
 			if closeErr := tcp.CloseWrite(); err == nil {
 				err = closeErr
 			}
@@ -223,27 +272,35 @@ func ConnectClientToBackend(ctx context.Context, conn net.Conn, pool *pool.Backe
 	}()
 
 	var totalBytes int64
-	status := "success"
+	anyError := false
 
 	for i := 0; i < 2; i++ {
 		result := <-res
 		totalBytes += result.bytes
 		if result.err != nil && result.err != io.EOF {
-			status = "error"
+			anyError = true
 		}
 	}
-	if status == "success" {
-		pool.RecordSuccess(backendInfo) // The probe or request fully completed!
-	} else {
-		pool.RecordFailure(backendInfo) // Catch mid-stream timeouts and resets
+
+	// B.1: Attribute failures correctly.
+	// Only blame the backend if the backend leg itself failed.
+	// If only the client leg broke, don't penalise the backend;
+	// if the backend was half-open, leave the probe unresolved
+	// (the watchdog in AcquireBackend will expire it and re-probe).
+	backendFailed := tracker.Failed()
+	status := "success"
+
+	if backendFailed {
+		status = "error"
+		pool.RecordFailure(backendInfo)
+	} else if !anyError {
+		pool.RecordSuccess(backendInfo)
 	}
+	// else: only client side errored — don't touch the breaker at all.
 
 	duration := time.Since(startTime).Milliseconds()
 	durationSec := float64(duration) / 1000.0
-	// timestamp := time.Now().Format(time.RFC3339)
 
-	// Output CSV line: timestamp,backend,duration_ms,bytes,status
-	// fmt.Printf("%s,%s,%d,%d,%s\n", timestamp, backendInfo.Address, duration, totalBytes, status)
 	requestsTotal.WithLabelValues(backendInfo.Address, status).Inc()
 	requestDuration.WithLabelValues(backendInfo.Address).Observe(float64(durationSec))
 }

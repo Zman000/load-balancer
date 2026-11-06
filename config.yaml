@@ -11,9 +11,6 @@ health_check:
     timeout: "1s"
     interval: "5s"
 
-print_status:
-    enabled: true
-
 rate_limit:
     requests_per_sec: 100
     burst_cap: 50
