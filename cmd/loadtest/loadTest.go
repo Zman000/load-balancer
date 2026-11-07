@@ -2,45 +2,58 @@ package main
 
 import (
 	"bytes"
+	"encoding/csv"
 	"flag"
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 )
 
-const (
-	numClients = 100
-)
-
 type reqResult struct {
-	id       int
-	duration time.Duration
-	success  bool
+	timestamp time.Time
+	id        int
+	duration  time.Duration
+	success   bool
+	reason    string
 }
 
 func client(id int, target string, payload []byte, wg *sync.WaitGroup, results chan<- reqResult) {
 	defer wg.Done()
 
 	start := time.Now()
-	conn, err := net.Dial("tcp", target)
+	conn, err := net.DialTimeout("tcp", target, 5*time.Second)
 	if err != nil {
-		// fmt.Printf("Client %d: connection failed: %v\n", id, err)
-		results <- reqResult{id, time.Since(start), false}
+		results <- reqResult{
+			timestamp: start,
+			id:        id,
+			duration:  time.Since(start),
+			success:   false,
+			reason:    "dial_error",
+		}
 		return
 	}
 	defer conn.Close()
 
-	// Send a small request.
-	// message := fmt.Sprintf("Hello from client %d", id)
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
 
 	_, err = conn.Write(payload)
 	if err != nil {
-		// fmt.Printf("Client %d: write failed: %v\n", id, err)
-		results <- reqResult{id, time.Since(start), false}
+		reason := "reset"
+		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			reason = "timeout"
+		}
+		results <- reqResult{
+			timestamp: start,
+			id:        id,
+			duration:  time.Since(start),
+			success:   false,
+			reason:    reason,
+		}
 		return
 	}
 
@@ -48,22 +61,54 @@ func client(id int, target string, payload []byte, wg *sync.WaitGroup, results c
 		tcpConn.CloseWrite()
 	}
 
-	// Read until EOF to complete the round trip
-	respBuf := make([]byte, 1024)
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	respBuf := make([]byte, 2048)
 	n, err := conn.Read(respBuf)
 
 	if n == 0 || (err != nil && err != io.EOF) {
-		results <- reqResult{id, time.Since(start), false}
+		reason := "reset"
+		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			reason = "timeout"
+		}
+		results <- reqResult{
+			timestamp: start,
+			id:        id,
+			duration:  time.Since(start),
+			success:   false,
+			reason:    reason,
+		}
 		return
 	}
 
 	respStr := string(respBuf[:n])
 	if strings.Contains(respStr, "429") || strings.Contains(respStr, "Too Many Requests") {
-		results <- reqResult{id, time.Since(start), false}
+		results <- reqResult{
+			timestamp: start,
+			id:        id,
+			duration:  time.Since(start),
+			success:   false,
+			reason:    "rate_limited",
+		}
 		return
 	}
-	results <- reqResult{id, time.Since(start), true}
+
+	if strings.Contains(respStr, "503") || strings.Contains(respStr, "Service Unavailable") {
+		results <- reqResult{
+			timestamp: start,
+			id:        id,
+			duration:  time.Since(start),
+			success:   false,
+			reason:    "unavailable",
+		}
+		return
+	}
+
+	results <- reqResult{
+		timestamp: start,
+		id:        id,
+		duration:  time.Since(start),
+		success:   true,
+		reason:    "none",
+	}
 }
 
 func main() {
@@ -71,7 +116,7 @@ func main() {
 	rampUp := flag.Duration("rampup", 10*time.Millisecond, "Delay between client starts")
 	payloadSize := flag.Int("payload", 1024, "Payload size in bytes")
 	target := flag.String("target", "localhost:8080", "Target address (host:port)")
-	// csvFile := flag.String("csv", "benchmark_results.csv", "Output CSV file")
+	csvFile := flag.String("csv", "benchmark_results.csv", "Output CSV file (set to empty to disable)")
 	flag.Parse()
 
 	fmt.Printf("Starting benchmark: %d clients, %d byte payload, targeting %s\n", *clients, *payloadSize, *target)
@@ -96,6 +141,7 @@ func main() {
 	var successes, failures int
 	var durations []float64
 	var allResults []reqResult
+	failureReasons := make(map[string]int)
 
 	// Collect metrics
 	for res := range results {
@@ -105,6 +151,7 @@ func main() {
 			durations = append(durations, float64(res.duration.Milliseconds()))
 		} else {
 			failures++
+			failureReasons[res.reason]++
 		}
 	}
 
@@ -122,6 +169,13 @@ func main() {
 	fmt.Printf("Total Requests: %d\n", *clients)
 	fmt.Printf("Successes:      %d\n", successes)
 	fmt.Printf("Failures:       %d\n", failures)
+	if failures > 0 {
+		fmt.Printf("  - Rate Limited (429): %d\n", failureReasons["rate_limited"])
+		fmt.Printf("  - Unavailable (503):  %d\n", failureReasons["unavailable"])
+		fmt.Printf("  - Timeouts:           %d\n", failureReasons["timeout"])
+		fmt.Printf("  - Connection Resets:  %d\n", failureReasons["reset"])
+		fmt.Printf("  - Dial Errors:        %d\n", failureReasons["dial_error"])
+	}
 	if successes > 0 {
 		fmt.Printf("p50 Latency:    %.2f ms\n", p50)
 		fmt.Printf("p95 Latency:    %.2f ms\n", p95)
@@ -129,27 +183,31 @@ func main() {
 	}
 
 	// Write CSV
-	// file, err := os.Create(*csvFile)
-	// if err != nil {
-	// 	fmt.Printf("Failed to create CSV: %v\n", err)
-	// 	return
-	// }
-	// defer file.Close()
+	if *csvFile != "" {
+		file, err := os.Create(*csvFile)
+		if err != nil {
+			fmt.Printf("Failed to create CSV: %v\n", err)
+			return
+		}
+		defer file.Close()
 
-	// writer := csv.NewWriter(file)
-	// defer writer.Flush()
+		writer := csv.NewWriter(file)
+		defer writer.Flush()
 
-	// writer.Write([]string{"client_id", "duration_ms", "status"})
-	// for _, res := range allResults {
-	// 	status := "success"
-	// 	if !res.success {
-	// 		status = "fail"
-	// 	}
-	// 	writer.Write([]string{
-	// 		fmt.Sprintf("%d", res.id),
-	// 		fmt.Sprintf("%d", res.duration.Milliseconds()),
-	// 		status,
-	// 	})
-	// }
-	// fmt.Printf("\nRaw results written to %s\n", *csvFile)
+		writer.Write([]string{"timestamp", "client_id", "duration_ms", "status", "reason"})
+		for _, res := range allResults {
+			status := "success"
+			if !res.success {
+				status = "fail"
+			}
+			writer.Write([]string{
+				res.timestamp.Format(time.RFC3339Nano),
+				fmt.Sprintf("%d", res.id),
+				fmt.Sprintf("%d", res.duration.Milliseconds()),
+				status,
+				res.reason,
+			})
+		}
+		fmt.Printf("\nRaw results written to %s\n", *csvFile)
+	}
 }

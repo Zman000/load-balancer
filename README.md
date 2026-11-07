@@ -186,11 +186,18 @@ Starting benchmark: 500 clients, 1024 byte payload, targeting lb:8080
 
 --- Benchmark Summary ---
 Total Requests: 500
-Successes:      130
-Failures:       370
+Successes:      133
+Failures:       367
+  - Rate Limited (429): 367
+  - Unavailable (503):  0
+  - Timeouts:           0
+  - Connection Resets:  0
+  - Dial Errors:        0
 p50 Latency:    35.00 ms
-p95 Latency:    2013.00 ms
-p99 Latency:    2037.00 ms
+p95 Latency:    2038.00 ms
+p99 Latency:    2055.00 ms
+
+Raw results written to benchmark_results.csv
 ```
 
 - **Rate Limiting Dynamics:** The token bucket admits the initial burst (capacity = 50 + refill during rampup), after which the bucket is exhausted. Incoming requests are then rejected with `HTTP 429 Too Many Requests`, admitting only periodic requests as tokens regenerate at 100 tokens/sec.
@@ -228,6 +235,29 @@ Tested across client scales without rate limiting:
 ![Latency Comparison](plots/latency_comparison.png)
 
 *Note: At 2,000 concurrent clients on a single backend, p99 reaches ~1.1s due to TCP listen backlog queueing under burst dial conditions; distributing across 2+ backends eliminates this tail latency spike.*
+
+---
+
+### Chaos Fault-Tolerance: Zero-Downtime Backend Failure & Recovery
+
+To empirically test resilience, we executed an automated chaos test (`run_chaos_test.py`) with 400 concurrent clients:
+1. **t = 2.5s (Fault Injection):** `backend1` container was forcibly stopped mid-traffic.
+2. **Circuit Breaking & Masking:** Immediate dial failures were intercepted by the jittered retry engine and redirected to healthy backends. The circuit breaker recorded consecutive failures and tripped `backend1` to `OPEN`, preventing subsequent requests from attempting to dial the dead container.
+3. **t = 6.7s (Recovery):** `backend1` was restarted. Active TCP health checks detected service restoration and seamlessly transitioned the breaker back to `CLOSED`.
+
+```text
+=== Chaos Test Summary (400 Clients under Live Node Failure) ===
+Total Requests: 400
+Successes:      400 (100.0% Success Rate)
+Failures:       0   (Zero Dropped Requests)
+p50 Latency:    31.00 ms
+p95 Latency:    1017.00 ms
+p99 Latency:    2033.00 ms
+```
+
+![Chaos Test Latency over Time](plots/chaos_test.png)
+
+*All 400 requests completed successfully. In-flight connections caught during the kill event were masked by exponential retries, resulting in zero user-visible errors.*
 
 ---
 
