@@ -23,13 +23,10 @@ jobs:
 
       - name: go vet
         run: go vet ./...
-        working-directory: LB
 
       - name: go test -race
         run: go test -race -timeout 60s ./...
-        working-directory: LB
 
       - name: Build Docker image
         run: docker build -t lb-ci-test .
-        working-directory: LB
 
