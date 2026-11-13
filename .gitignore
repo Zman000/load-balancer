@@ -1,1 +1,34 @@
+# Binaries
 *.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+loadbalancer
+backend
+loadtest
+bin/
+
+# Test binaries & profiles
+*.test
+*.out
+*.prof
+cpu.pprof
+mem.pprof
+
+# OS / Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Python / venv
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Dynamic test CSV outputs
+plots/chaos_test.csv
+benchmark_results.csv

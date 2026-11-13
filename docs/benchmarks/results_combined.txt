@@ -1,4 +1,4 @@
-D:\Programming\LoadBalancer\LB>go run loadTest.go -clients 10 -payload 1024 -rampup 10ms -csv results_1b_10c.csv
+$ go run ./cmd/loadtest/loadTest.go -clients 10 -payload 1024 -rampup 10ms -csv results_1b_10c.csv
 Starting benchmark: 10 clients, 1024 byte payload, targeting localhost:8080
 
 --- Benchmark Summary ---
@@ -11,7 +11,7 @@ p99 Latency:    317.00 ms
 
 Raw results written to results_1b_10c.csv
 
-D:\Programming\LoadBalancer\LB>go run loadTest.go -clients 100 -payload 1024 -rampup 5ms -csv results_1b_100c.csv
+$ go run ./cmd/loadtest/loadTest.go -clients 100 -payload 1024 -rampup 5ms -csv results_1b_100c.csv
 Starting benchmark: 100 clients, 1024 byte payload, targeting localhost:8080
 
 --- Benchmark Summary ---
@@ -24,7 +24,7 @@ p99 Latency:    316.00 ms
 
 Raw results written to results_1b_100c.csv
 
-D:\Programming\LoadBalancer\LB>go run loadTest.go -clients 500 -payload 1024 -rampup 2ms -csv results_1b_500c.csv  
+$ go run ./cmd/loadtest/loadTest.go -clients 500 -payload 1024 -rampup 2ms -csv results_1b_500c.csv  
 Starting benchmark: 500 clients, 1024 byte payload, targeting localhost:8080
 
 --- Benchmark Summary ---
@@ -37,7 +37,7 @@ p99 Latency:    314.00 ms
 
 Raw results written to results_1b_500c.csv
 
-D:\Programming\LoadBalancer\LB>go run loadTest.go -clients 2000 -payload 1024 -rampup 1ms -csv results_1b_2000c.csv
+$ go run ./cmd/loadtest/loadTest.go -clients 2000 -payload 1024 -rampup 1ms -csv results_1b_2000c.csv
 Starting benchmark: 2000 clients, 1024 byte payload, targeting localhost:8080
 
 --- Benchmark Summary ---
@@ -52,7 +52,7 @@ Raw results written to results_1b_2000c.csv
 
 -----------------------------------------------------------------------------------------------------------------------
 
-D:\Programming\LoadBalancer\LB>go run loadTest.go -clients 10 -payload 1024 -rampup 10ms -csv results_2b_10c.csv   
+$ go run ./cmd/loadtest/loadTest.go -clients 10 -payload 1024 -rampup 10ms -csv results_2b_10c.csv   
 Starting benchmark: 10 clients, 1024 byte payload, targeting localhost:8080
 
 --- Benchmark Summary ---
@@ -65,7 +65,7 @@ p99 Latency:    318.00 ms
 
 Raw results written to results_2b_10c.csv
 
-D:\Programming\LoadBalancer\LB>go run loadTest.go -clients 100 -payload 1024 -rampup 5ms -csv results_2b_100c.csv  
+$ go run ./cmd/loadtest/loadTest.go -clients 100 -payload 1024 -rampup 5ms -csv results_2b_100c.csv  
 Starting benchmark: 100 clients, 1024 byte payload, targeting localhost:8080
 
 --- Benchmark Summary ---
@@ -78,7 +78,7 @@ p99 Latency:    319.00 ms
 
 Raw results written to results_2b_100c.csv
 
-D:\Programming\LoadBalancer\LB>go run loadTest.go -clients 500 -payload 1024 -rampup 2ms -csv results_2b_500c.csv  
+$ go run ./cmd/loadtest/loadTest.go -clients 500 -payload 1024 -rampup 2ms -csv results_2b_500c.csv  
 Starting benchmark: 500 clients, 1024 byte payload, targeting localhost:8080
 
 --- Benchmark Summary ---
@@ -91,7 +91,7 @@ p99 Latency:    343.00 ms
 
 Raw results written to results_2b_500c.csv
 
-D:\Programming\LoadBalancer\LB>go run loadTest.go -clients 2000 -payload 1024 -rampup 1ms -csv results_2b_2000c.csv
+$ go run ./cmd/loadtest/loadTest.go -clients 2000 -payload 1024 -rampup 1ms -csv results_2b_2000c.csv
 Starting benchmark: 2000 clients, 1024 byte payload, targeting localhost:8080
 
 --- Benchmark Summary ---
@@ -106,7 +106,7 @@ Raw results written to results_2b_2000c.csv
 
 -----------------------------------------------------------------------------------------------------------------------
 
-D:\Programming\LoadBalancer\LB>go run loadTest.go -clients 10 -payload 1024 -rampup 10ms -csv results_4b_10c.csv   
+$ go run ./cmd/loadtest/loadTest.go -clients 10 -payload 1024 -rampup 10ms -csv results_4b_10c.csv   
 Starting benchmark: 10 clients, 1024 byte payload, targeting localhost:8080
 
 --- Benchmark Summary ---
@@ -119,7 +119,7 @@ p99 Latency:    318.00 ms
 
 Raw results written to results_4b_10c.csv
 
-D:\Programming\LoadBalancer\LB>go run loadTest.go -clients 100 -payload 1024 -rampup 5ms -csv results_4b_100c.csv  
+$ go run ./cmd/loadtest/loadTest.go -clients 100 -payload 1024 -rampup 5ms -csv results_4b_100c.csv  
 Starting benchmark: 100 clients, 1024 byte payload, targeting localhost:8080
 
 --- Benchmark Summary ---
@@ -132,7 +132,7 @@ p99 Latency:    319.00 ms
 
 Raw results written to results_4b_100c.csv
 
-D:\Programming\LoadBalancer\LB>go run loadTest.go -clients 500 -payload 1024 -rampup 2ms -csv results_4b_500c.csv  
+$ go run ./cmd/loadtest/loadTest.go -clients 500 -payload 1024 -rampup 2ms -csv results_4b_500c.csv  
 Starting benchmark: 500 clients, 1024 byte payload, targeting localhost:8080
 
 --- Benchmark Summary ---
@@ -145,7 +145,7 @@ p99 Latency:    313.00 ms
 
 Raw results written to results_4b_500c.csv
 
-D:\Programming\LoadBalancer\LB>go run loadTest.go -clients 2000 -payload 1024 -rampup 1ms -csv results_4b_2000c.csv
+$ go run ./cmd/loadtest/loadTest.go -clients 2000 -payload 1024 -rampup 1ms -csv results_4b_2000c.csv
 Starting benchmark: 2000 clients, 1024 byte payload, targeting localhost:8080
 
 --- Benchmark Summary ---

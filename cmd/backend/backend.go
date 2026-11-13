@@ -8,8 +8,6 @@ import (
 	"time"
 )
 
-var delay time.Duration
-
 func handleClient(conn net.Conn, baseDelay, jitter time.Duration) {
 	defer conn.Close()
 
@@ -53,9 +51,6 @@ func main() {
 			fmt.Println("Backend error on accept")
 			panic(err)
 		}
-
-		//for allowing prometheus to detect active connection, slows down overall speed
-		// time.Sleep(200 * time.Millisecond)
 
 		go handleClient(conn, *delay, *jitter)
 	}

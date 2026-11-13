@@ -62,16 +62,20 @@ flowchart TD
 - Closes the TCP listener to stop accepting new requests, then allows active in-flight transfers up to 30 seconds to complete gracefully before force-closing remaining active sockets.
 
 ### 6. Full Prometheus & Grafana Observability
-- Exposes Prometheus metrics on `:2112/metrics` and a human-readable JSON snapshot on `:2112/status`.
-- Tracks:
-  - `lb_req_total{backend, status}`: Request throughput by backend and status.
-  - `lb_req_duration_seconds`: Histogram of round-trip latencies.
-  - `lb_active_connections{backend}`: Real-time concurrency per backend.
-  - `lb_backend_health{backend}`: Active health status (1 = healthy, 0 = unhealthy).
-  - `lb_cb_state{backend}`: Circuit breaker state (0 = closed, 1 = half-open, 2 = open).
-  - `lb_rate_limited_total`: Requests rejected by the rate limiter.
-  - `lb_conn_rejected_total{reason}`: Rejections partitioned by `rate_limited`, `connection_limit`, and `no_backend`.
-  - `lb_retries_total{backend}`: Retries triggered per backend.
+- Exposes Prometheus metrics on `:2112/metrics` with hardened HTTP server timeouts (`ReadHeaderTimeout: 3s`, `ReadTimeout: 5s`, `WriteTimeout: 5s`, `IdleTimeout: 30s`) and graceful context-bounded draining on shutdown.
+- Exposes a real-time JSON snapshot on `:2112/status` detailing backend health, active connection distribution, and breaker states.
+- **Pre-provisioned 8-Panel Grafana Dashboard (`dashboard.json`, schema v39):**
+
+| Panel | Metric / PromQL | Visualization & Purpose |
+|---|---|---|
+| **Active Connections** | `lb_active_connections` | Real-time concurrent in-flight TCP connections per backend. |
+| **Request Rate** | `sum by (backend, status) (rate(lb_req_total[10s]))` | Throughput (req/s) partitioned by backend target and response status. |
+| **Latency p95** | `histogram_quantile(0.95, sum by (le, backend) (rate(lb_req_duration_seconds_bucket[30s])))` | 95th percentile latency curves per backend leg in seconds. |
+| **Healthy Backends** | `sum(lb_backend_health)` | Instant stat gauge showing active TCP health-checked backends (3 = all healthy). |
+| **Rate Limited (req/s)** | `rate(lb_rate_limited_total[10s])` | Timeseries tracking 429 rate limiter rejection velocity. |
+| **Circuit Breaker State** | `lb_cb_state` | State tracker: `0: Closed` (green), `1: Half-Open` (yellow probe), `2: Open` (red tripped). |
+| **Connections Rejected** | `sum by (reason) (rate(lb_conn_rejected_total[10s]))` | Rejection breakdown by trigger: `rate_limited`, `connection_limit`, `no_backend`. |
+| **Retries (per second)** | `sum by (backend) (rate(lb_retries_total[10s]))` | Exponential retry frequency per backend during node downtime or transient dial faults. |
 
 ---
 
@@ -82,7 +86,6 @@ flowchart TD
 ├── cmd/
 │   ├── loadbalancer/   # Load balancer entrypoint & accept loop
 │   ├── backend/        # Raw TCP test backend with artificial delay & jitter
-│   ├── client/         # Single-client test utility
 │   └── loadtest/       # High-concurrency benchmark generator with percentile metrics
 ├── internal/
 │   ├── config/         # YAML config parsing, strict KnownFields validation & duration parsing

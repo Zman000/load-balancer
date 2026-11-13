@@ -100,18 +100,9 @@ func (p *BackendPool) AcquireBackend() *Backend {
 			return false
 		}
 		if b.State == StateOpen {
-			// if time.Since(b.TripTime) > p.CbCooldown {
-			// 	b.State = StateHalfOpen
-			// 	cbStateGauge.WithLabelValues(b.Address).Set(1)
-			// 	slog.Info("circuit breaker HALF-OPEN ", "backend", b.Address)
-			// 	return true
-			// }
-			// return false
 			return now.Sub(b.TripTime) >= p.CbCooldown
 		}
 		if b.State == StateHalfOpen {
-			// A probe is already in flight. Deny all other requests until the probe finishes.
-			// return false
 			return now.Sub(b.ProbeStart) >= p.CbCooldown // Watchdog: recover if a probe gets lost
 		}
 		return true

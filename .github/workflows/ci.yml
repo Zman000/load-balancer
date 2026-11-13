@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Vet, Test & Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+        working-directory: LB
+
+      - name: go test -race
+        run: go test -race -timeout 60s ./...
+        working-directory: LB
+
+      - name: Build Docker image
+        run: docker build -t lb-ci-test .
+        working-directory: LB
+

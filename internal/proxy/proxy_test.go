@@ -10,8 +10,14 @@ import (
 )
 
 func TestCircuitBreaker_Integration(t *testing.T) {
-	server1, _ := net.Listen("tcp", "127.0.0.1:0")
-	server2, _ := net.Listen("tcp", "127.0.0.1:0")
+	server1, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to start server1: %v", err)
+	}
+	server2, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to start server2: %v", err)
+	}
 
 	defer server1.Close()
 
@@ -34,7 +40,8 @@ func TestCircuitBreaker_Integration(t *testing.T) {
 		CbMaxFailures: 2,
 		CbCooldown:    5 * time.Second,
 	}
-	ctx, _ := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	server2.Close()
 	for i := 0; i < 5; i++ {
 		_, conn := ConnectBackend(ctx, lbPool, 100*time.Millisecond, 0, 0)

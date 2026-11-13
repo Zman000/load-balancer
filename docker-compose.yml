@@ -1,46 +1,69 @@
 services:
   lb:
-    build: .
+    build:
+      context: .
+      target: loadbalancer
     ports:
       - "8080:8080" # Windows localhost:8080 to the container
       - "2112:2112" # Windows localhost:2112 to the container for Prometheus
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
     depends_on:
-      - backend1
-      - backend2
-      - backend3
+      backend1:
+        condition: service_healthy
+      backend2:
+        condition: service_healthy
+      backend3:
+        condition: service_healthy
 
   backend1:
-    image: golang:1.26-alpine
-    working_dir: /app
-    volumes:
-      - .:/app
-    command: go run cmd/backend/backend.go -port 9000 -delay 1s
+    build:
+      context: .
+      target: backend
+    command: ["-port", "9000", "-delay", "1s"]
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "9000"]
+      interval: 2s
+      timeout: 1s
+      retries: 3
+      start_period: 1s
 
   backend2:
-    image: golang:1.26-alpine
-    working_dir: /app
-    volumes:
-      - .:/app
-    command: go run cmd/backend/backend.go -port 9000 -delay 2s
+    build:
+      context: .
+      target: backend
+    command: ["-port", "9000", "-delay", "2s"]
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "9000"]
+      interval: 2s
+      timeout: 1s
+      retries: 3
+      start_period: 1s
 
   backend3:
+    build:
+      context: .
+      target: backend
+    command: ["-port", "9000"]
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "9000"]
+      interval: 2s
+      timeout: 1s
+      retries: 3
+      start_period: 1s
+
+  loadtest:
     image: golang:1.26-alpine
     working_dir: /app
     volumes:
       - .:/app
-    command: go run cmd/backend/backend.go -port 9000
+    profiles: ["bench"]
+    command: go run cmd/loadtest/loadTest.go -target lb:8080 -clients 500 -rampup 1ms
+    depends_on:
+      - lb
 
-  loadtest:
-      image: golang:1.26-alpine
-      working_dir: /app
-      volumes:
-        - .:/app
-      profiles: ["bench"]
-      command: go run cmd/loadtest/loadTest.go -target lb:8080 -clients 500 -rampup 1ms
-      depends_on:
-        - lb
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v3.2.1
     ports:
       - "9090:9090"
     volumes:
@@ -51,7 +74,7 @@ services:
       - lb
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:11.5.2
     ports:
       - "3000:3000"
     environment:

@@ -1,3 +1,4 @@
+import os
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -44,5 +45,6 @@ ax.annotate('TCP backlog queueing spike\n(1,109 ms at 1 backend)',
             fontsize=9, fontstyle='italic', bbox=dict(boxstyle='round,pad=0.3', facecolor='#FFF3CD', edgecolor='#FFEEBA'))
 
 plt.tight_layout()
-plt.savefig('d:/Programming/LoadBalancer/LB/plots/latency_comparison.png', dpi=150)
-print("Updated latency_comparison.png successfully.")
+output_path = os.path.join(os.path.dirname(__file__), 'latency_comparison.png')
+plt.savefig(output_path, dpi=150)
+print(f"Updated {output_path} successfully.")

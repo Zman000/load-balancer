@@ -121,19 +121,29 @@ func main() {
 		CbCooldown:    cbCooldown,
 	}
 
-	go func() {
-		http.Handle("/metrics", promhttp.Handler())
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("/metrics", promhttp.Handler())
+	metricsMux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		status := lbPool.GetStatusSnapshot()
+		w.Header().Set("Content-Type", "application/json")
+		encoder := json.NewEncoder(w)
+		encoder.SetIndent("", " ")
+		encoder.Encode(status)
+	})
 
-		http.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
-			status := lbPool.GetStatusSnapshot()
-			w.Header().Set("Content-Type", "application/json")
-			encoder := json.NewEncoder(w)
-			encoder.SetIndent("", " ")
-			encoder.Encode(status)
-		})
+	metricsServer := &http.Server{
+		Addr:              ":2112",
+		Handler:           metricsMux,
+		ReadHeaderTimeout: 3 * time.Second,
+		ReadTimeout:       5 * time.Second,
+		WriteTimeout:      5 * time.Second,
+		IdleTimeout:       30 * time.Second,
+	}
+
+	go func() {
 		slog.Info("observability server listening on", "port", "2112", "routes", "/metrics, /status")
-		if err := http.ListenAndServe(":2112", nil); err != nil {
-			slog.Warn("Observability server failed ", "error", err)
+		if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Warn("Observability server failed", "error", err)
 		}
 	}()
 
@@ -166,11 +176,6 @@ func main() {
 		go activeHealthCheck(&lbPool, config.HealthCheck.ParsedInterval, config.HealthCheck.ParsedTimeout, shutdown)
 	}
 
-	// if config.PrintStatus.Enabled {
-	// 	//function to test client connnections using loadTest file
-	// 	go pool.PrintStatus(shutdown)
-	// }
-
 	// Wait for the shutdown signal and then close the listener.
 	go func() {
 		<-signalChannel
@@ -183,7 +188,6 @@ func main() {
 
 	for {
 		conn, err := lbListener.Accept()
-		// fmt.Println("Client connected ", conn.RemoteAddr())
 		if err != nil {
 			select {
 			case <-shutdown:
@@ -251,6 +255,16 @@ func main() {
 
 shutdown:
 	slog.Info("stopped accepting new connections")
+
+	// Drain and stop the metrics HTTP server cleanly
+	metricsShutdownCtx, metricsCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer metricsCancel()
+	if err := metricsServer.Shutdown(metricsShutdownCtx); err != nil {
+		slog.Warn("observability server shutdown error", "error", err)
+	} else {
+		slog.Info("observability server stopped cleanly")
+	}
+
 	slog.Info("Waiting for active connections to finish...")
 	//create context for 30 seconds
 	ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
